@@ -6,26 +6,24 @@ import plotly.graph_objects as go
 import time
 
 # --- 1. CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="AI Stock Scanner (Debug Mode)", layout="wide", page_icon="🛠️")
-st.title("🛠️ HỆ THỐNG QUÉT & GỠ LỖI (DEBUG MODE)")
-st.caption("Chế độ này giúp đảm bảo dữ liệu luôn hiển thị, bất chấp lỗi từ Yahoo Finance.")
+st.set_page_config(page_title="AI Stock Sniper", layout="wide", page_icon="🎯")
+st.title("🎯 HỆ THỐNG TÍN HIỆU CHỨNG KHOÁN (FINAL STABLE)")
+st.caption("Trạng thái: Đã sửa lỗi SMA_20 & Kết nối Yahoo Finance")
 
 # --- 2. KHO DỮ LIỆU ---
 def get_stock_universe(sector_choice):
-    # DANH SÁCH RÚT GỌN ĐỂ TEST NHANH TRƯỚC (Sau đó mới mở rộng)
-    banks = ["VCB", "BID", "CTG", "TCB", "VPB", "MBB", "ACB", "STB", "LPB", "EIB"]
-    securities = ["SSI", "VND", "VCI", "HCM", "SHS", "MBS", "FTS", "VIX"]
-    real_estate = ["VHM", "VIC", "NVL", "PDR", "KDH", "DIG", "CEO", "DXG", "KBC", "IDC"]
-    steel = ["HPG", "HSG", "NKG"]
-    seafood = ["VHC", "ANV", "FMC", "MPC", "IDI"]
-    vn30_other = ["MWG", "FPT", "PNJ", "MSN", "GAS", "VNM", "REE"]
-    
-    # DANH SÁCH FULL (VN100 + MIDCAP)
-    full_list = list(set(banks + securities + real_estate + steel + seafood + vn30_other))
+    # DANH SÁCH MÃ QUAN TRỌNG
+    banks = ["VCB", "BID", "CTG", "TCB", "VPB", "MBB", "ACB", "STB", "HDB", "SHB", "SSB", "MSB", "OCB", "TPB", "VIB", "LPB"]
+    securities = ["SSI", "VND", "VCI", "HCM", "SHS", "MBS", "FTS", "BSI", "CTS", "VIX", "ORS"]
+    real_estate = ["VHM", "VIC", "VRE", "NVL", "PDR", "KDH", "DIG", "CEO", "DXG", "NLG", "KBC", "IDC", "SZC", "GVR", "HDG", "NTC", "SIP", "PHR"]
+    steel = ["HPG", "HSG", "NKG", "VGS"]
+    seafood = ["VHC", "ANV", "FMC", "MPC", "IDI", "CMX"]
+    vn30_other = ["MWG", "FPT", "PNJ", "MSN", "GAS", "PLX", "POW", "SAB", "VNM", "BVH", "REE", "GMD"]
+    midcap = ["DGC", "CSV", "DPM", "DCM", "DGW", "FRT", "PET", "PC1", "GEG", "HAH", "VOS", "PVT", "TNG", "GIL", "PVS", "PVD", "DBC", "HAG", "PAN"]
 
     selected_symbols = []
     if "QUÉT TOÀN BỘ" in str(sector_choice):
-        selected_symbols = full_list
+        selected_symbols = list(set(banks + securities + real_estate + steel + seafood + vn30_other + midcap))
     else:
         if "Ngân hàng" in str(sector_choice): selected_symbols += banks
         if "Chứng khoán" in str(sector_choice): selected_symbols += securities
@@ -36,44 +34,48 @@ def get_stock_universe(sector_choice):
 
     return [f"{sym}.VN" for sym in list(set(selected_symbols))]
 
-# --- 3. HÀM PHÂN TÍCH SIÊU BỀN (FAIL-SAFE) ---
-def analyze_stock_debug(symbol):
-    log_status = "Khởi tạo"
+# --- 3. HÀM PHÂN TÍCH (SỬA LỖI KEY ERROR) ---
+def analyze_stock_final(symbol):
     try:
-        # 1. TẢI GIÁ (Dùng yf.download thay vì Ticker để ổn định hơn)
-        # threads=False giúp tránh bị Yahoo chặn IP trên Cloud
-        df = yf.download(symbol, period="1y", progress=False, threads=False)
+        # 1. TẢI DATA (Dùng Ticker.history ổn định hơn download)
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="1y")
         
-        # Xử lý lỗi MultiIndex của Yahoo mới
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-            
-        if df is None or len(df) < 50:
-            return None, f"❌ Không đủ dữ liệu giá (Row: {len(df) if df is not None else 0})"
+        # Kiểm tra dữ liệu rỗng
+        if df is None or df.empty or len(df) < 50:
+            return None, "❌ Không có dữ liệu (Yahoo chặn hoặc mã lỗi)"
+
+        # 2. TÍNH CHỈ BÁO (GÁN THỦ CÔNG ĐỂ TRÁNH LỖI SMA_20)
+        # Thay vì dùng append=True, ta gán thẳng vào cột mới
+        try:
+            # Lưu ý: Pandas TA trả về Series, ta gán trực tiếp
+            df['SMA_20'] = ta.sma(df['Close'], length=20)
+            df['SMA_50'] = ta.sma(df['Close'], length=50)
+            df['RSI_14'] = ta.rsi(df['Close'], length=14)
+        except Exception as e:
+            return None, f"❌ Lỗi tính toán chỉ báo: {str(e)}"
+
+        # Kiểm tra xem cột đã có chưa (Double check)
+        if 'SMA_20' not in df.columns:
+            return None, "❌ Lỗi: Không tạo được cột SMA_20"
 
         latest = df.iloc[-1]
         
-        # 2. CHẤM ĐIỂM KỸ THUẬT
-        df.ta.sma(length=20, append=True)
-        df.ta.sma(length=50, append=True)
-        df.ta.rsi(length=14, append=True)
-        
+        # 3. CHẤM ĐIỂM
         score = 0
         reasons = []
+
+        # Kỹ thuật (50đ)
+        # Dùng .get để tránh lỗi nếu giá trị NaN
+        close = latest['Close']
+        sma20 = latest.get('SMA_20', 0)
+        sma50 = latest.get('SMA_50', 0)
+        rsi = latest.get('RSI_14', 50)
+
+        if close > sma20: score += 15
+        if sma20 > sma50: score += 20
+        if 50 <= rsi <= 70: score += 15
         
-        # Trend (50đ)
-        if latest['Close'] > latest['SMA_20']: score += 20
-        if latest['SMA_20'] > latest['SMA_50']: score += 20
-        try:
-            if latest['RSI_14'] > 50: score += 10
-        except: pass
-        
-        # Tiền vào (20đ)
-        avg_vol = df['Volume'].tail(20).mean()
-        if latest['Volume'] > avg_vol: 
-            score += 20
-            reasons.append("Tiền vào")
-            
         # Tích lũy (30đ)
         df_last = df.tail(20)
         fluctuation = (df_last['High'].max() - df_last['Low'].min()) / df_last['Low'].min()
@@ -81,43 +83,47 @@ def analyze_stock_debug(symbol):
             score += 30
             reasons.append("Nền chặt")
         elif fluctuation < 0.25:
-            score += 10
+            score += 15
+            
+        # Tiền vào (20đ)
+        avg_vol = df['Volume'].tail(20).mean()
+        if latest['Volume'] > avg_vol: 
+            score += 20
+            reasons.append("Tiền vào")
 
-        # 3. LẤY INFO (CỐ GẮNG NHƯNG KHÔNG BẮT BUỘC)
+        # 4. LẤY INFO TÀI CHÍNH (Cố gắng lấy, lỗi thì bỏ qua)
         pe, eps, roe = "-", "-", "-"
-        try:
-            # Chỉ lấy info nếu điểm cao để tiết kiệm thời gian
-            if score >= 40: 
-                ticker = yf.Ticker(symbol)
+        # Chỉ lấy info cho mã có điểm khá để tiết kiệm thời gian
+        if score >= 40:
+            try:
                 info = ticker.info
                 pe = info.get('trailingPE', '-')
-                if pe != '-': pe = round(pe, 1)
+                if pe != '-' and pe is not None: pe = round(pe, 1)
                 
                 eps = info.get('trailingEps', '-')
-                if eps != '-': eps = f"{int(eps):,}"
+                if eps != '-' and eps is not None: eps = f"{int(eps):,}"
                 
                 roe = info.get('returnOnEquity', '-')
-                if roe != '-': roe = f"{round(roe*100, 1)}%"
-        except:
-            log_status = "⚠️ Lấy giá OK, nhưng lỗi Info tài chính"
+                if roe != '-' and roe is not None: roe = f"{round(roe*100, 1)}%"
+            except:
+                pass # Bỏ qua lỗi info
 
         rating = "THEO DÕI"
-        if score >= 80: rating = "MUA MẠNH"
-        elif score >= 60: rating = "MUA"
+        if score >= 70: rating = "MUA"
+        if score >= 85: rating = "MUA MẠNH"
 
-        data = {
+        return {
             "Mã": symbol.replace(".VN", ""),
             "Giá": f"{int(latest['Close']):,}",
             "Điểm": score,
             "Xếp hạng": rating,
             "P/E": pe, "EPS": eps, "ROE": roe,
-            "Lý do": ", ".join(reasons) if reasons else "Không rõ",
+            "Lý do": ", ".join(reasons),
             "Dataframe": df
-        }
-        return data, "✅ Thành công"
+        }, "OK"
 
     except Exception as e:
-        return None, f"❌ Lỗi Code: {str(e)}"
+        return None, f"❌ Lỗi hệ thống: {str(e)}"
 
 # --- 4. VẼ BIỂU ĐỒ ---
 def plot_chart(data):
@@ -125,8 +131,12 @@ def plot_chart(data):
     symbol = data['Mã']
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='MA50'))
+    
+    if 'SMA_20' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'))
+    if 'SMA_50' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='MA50'))
+        
     fig.update_layout(title=f"Chart: {symbol} ({data['Điểm']}đ)", height=500, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -135,43 +145,33 @@ with st.sidebar:
     st.header("🎛️ BỘ LỌC")
     sectors = ["QUÉT TOÀN BỘ", "Ngân hàng", "Chứng khoán", "Bất động sản", "Thép", "Thủy sản"]
     choice = st.multiselect("Ngành:", sectors, default=["QUÉT TOÀN BỘ"])
-    min_score = st.slider("Điểm tối thiểu (Để 0 để xem tất cả)", 0, 100, 40)
+    min_score = st.slider("Điểm tối thiểu", 0, 100, 40)
     btn_scan = st.button("CHẠY QUÉT 🚀", type="primary")
 
 if btn_scan:
     symbols = get_stock_universe(choice)
     
-    # KHU VỰC NHẬT KÝ (LOG) - QUAN TRỌNG ĐỂ BIẾT LỖI
     st.subheader("📝 Nhật Ký Hoạt Động")
     log_box = st.empty()
     progress = st.progress(0)
     
     results = []
-    logs = []
     
     for i, sym in enumerate(symbols):
-        # Hiện trạng thái
         log_box.text(f"Đang xử lý: {sym} ({i+1}/{len(symbols)})...")
         
-        data, msg = analyze_stock_debug(sym)
+        # Thêm độ trễ cực nhỏ để tránh bị Yahoo chặn (quan trọng)
+        time.sleep(0.1)
+        
+        data, msg = analyze_stock_final(sym)
         
         if data:
             if data['Điểm'] >= min_score:
                 results.append(data)
-                logs.append(f"🟢 {sym}: {msg} (Điểm: {data['Điểm']})")
-            else:
-                logs.append(f"⚪ {sym}: Điểm thấp ({data['Điểm']})")
-        else:
-            logs.append(f"🔴 {sym}: {msg}")
-            
+    
         progress.progress((i+1)/len(symbols))
         
-    log_box.text("Đã hoàn tất!")
-    
-    # Hiển thị nhật ký rút gọn (để bạn biết mã nào lỗi)
-    with st.expander("Xem chi tiết Nhật ký quét (Bấm vào đây)"):
-        for log in logs:
-            st.write(log)
+    log_box.text("✅ Đã hoàn tất!")
 
     if results:
         df_res = pd.DataFrame(results).sort_values(by="Điểm", ascending=False)
@@ -180,7 +180,7 @@ if btn_scan:
         st.dataframe(
             df_res[['Mã', 'Giá', 'Điểm', 'Xếp hạng', 'P/E', 'EPS', 'ROE', 'Lý do']],
             use_container_width=True, 
-            height=500
+            height=600
         )
         
         st.divider()
@@ -190,4 +190,4 @@ if btn_scan:
             item = next((x for x in results if x['Mã'] == selected), None)
             if item: plot_chart(item)
     else:
-        st.error("Vẫn không tìm thấy mã nào! Hãy kiểm tra phần 'Nhật ký quét' ở trên xem lỗi gì.")
+        st.warning("Không tìm thấy mã nào! (Hãy thử kéo điểm về 0 để kiểm tra)")
