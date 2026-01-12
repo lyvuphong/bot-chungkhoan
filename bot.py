@@ -18,7 +18,7 @@ def get_stock_universe(sector_choice):
     # BẤT ĐỘNG SẢN & KCN
     real_estate = ["VHM", "VIC", "VRE", "NVL", "PDR", "KDH", "DIG", "CEO", "DXG", "NLG", "KBC", "IDC", "SZC", "GVR", "HDG", "NTC", "SIP", "PHR"]
     # THÉP & SẢN XUẤT
-    production = ["HPG", "HSG", "NKG", "DGC", "CSV", "VHC", "ANV", "FMC", "MPC, "PTB"]
+    production = ["HPG", "HSG", "NKG", "DGC", "CSV", "VHC", "ANV", "FMC", "MPC", "PTB"]
     # VN30 KHÁC
     vn30_other = ["MWG", "FPT", "PNJ", "MSN", "GAS", "PLX", "POW", "SAB", "VNM", "BVH", "REE", "GMD"]
 
@@ -240,3 +240,4 @@ elif 'results' in st.session_state and st.session_state['results'] is None:
     st.warning("Không tìm thấy mã nào đạt chuẩn. Hãy thử hạ điểm số xuống thấp hơn!")
 else:
     st.info("👈 Chọn ngành và bấm 'QUÉT CHI TIẾT'.")
+
