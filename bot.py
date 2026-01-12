@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # --- 1. CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="AI Stock Sniper (Tích Lũy)", layout="wide", page_icon="🎯")
-st.title("🎯 HỆ THỐNG SĂN CỔ PHIẾU TÍCH LŨY")
-st.caption("Chiến lược: Tích lũy nền phẳng > 3 tháng + Dòng tiền bùng nổ")
+st.set_page_config(page_title="AI Sniper Pro (Trading Plan)", layout="wide", page_icon="🎯")
+st.title("🎯 AI TRADING PLAN: TÍCH LŨY & ĐIỂM RA VÀO")
+st.caption("Chiến lược: Nền giá siêu chặt (<15%) | Tự động tính Risk/Reward")
 
 # --- 2. DANH SÁCH CỔ PHIẾU ---
 def get_symbol_list():
@@ -22,147 +22,178 @@ def get_symbol_list():
     ]
     return [f"{sym}.VN" for sym in raw_symbols]
 
-# --- 3. HÀM PHÂN TÍCH CHUYÊN SÂU ---
-def analyze_stock_accumulation(symbol):
+# --- 3. HÀM TÍNH TOÁN KẾ HOẠCH GIAO DỊCH ---
+def analyze_stock_plan(symbol):
     try:
-        # Lấy dữ liệu 1 năm để có đủ bối cảnh
+        # Lấy dữ liệu 1 năm
         df = yf.download(symbol, period="1y", progress=False)
-        
-        # Xử lý Multi-index của Yahoo
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
             
-        if df is None or len(df) < 70: return None # Cần ít nhất 3 tháng dữ liệu
+        if df is None or len(df) < 70: return None
 
-        # Tính chỉ báo cơ bản
+        # Tính chỉ báo
         df.ta.sma(length=20, append=True)
         df.ta.sma(length=50, append=True)
         df.ta.rsi(length=14, append=True)
         
         latest = df.iloc[-1]
         
-        # --- LOGIC TÍNH TÍCH LŨY 3 THÁNG (QUAN TRỌNG) ---
-        # Lấy 60 phiên gần nhất (~3 tháng)
-        df_3m = df.tail(60)
-        max_price_3m = df_3m['High'].max()
-        min_price_3m = df_3m['Low'].min()
+        # --- LOGIC TÍCH LŨY 3 THÁNG (<15%) ---
+        df_3m = df.tail(60) # 60 phiên ~ 3 tháng
+        max_price = df_3m['High'].max()
+        min_price = df_3m['Low'].min()
         
-        # Tính biên độ biến động (Fluctuation)
-        # Nếu (Đỉnh - Đáy) / Đáy < 20% => Là tích lũy chặt
-        fluctuation = (max_price_3m - min_price_3m) / min_price_3m
-        is_accumulation = fluctuation < 0.20  # Biên độ dưới 20%
+        # Biên độ dao động
+        fluctuation = (max_price - min_price) / min_price
+        is_tight = fluctuation < 0.15  # ĐIỀU KIỆN MỚI: < 15%
         
-        # --- HỆ THỐNG CHẤM ĐIỂM ---
+        # --- CHẤM ĐIỂM ---
         score = 0
         reasons = []
+        
+        if latest['Close'] < 5000: return None # Bỏ penny rác
 
-        # 1. Tiêu chí Tích Lũy (Ưu tiên số 1)
-        if is_accumulation:
-            score += 40
-            reasons.append(f"Nền chặt 3M (Biên độ {round(fluctuation*100, 1)}%)")
-        else:
-            # Nếu không tích lũy chặt, nhưng đang Uptrend mạnh thì vẫn cộng điểm nhẹ
-            if latest['Close'] > latest['SMA_50']: score += 10
+        # 1. Tích lũy (Quan trọng nhất)
+        if is_tight:
+            score += 50
+            reasons.append(f"Nền siêu chặt ({round(fluctuation*100, 1)}%)")
+        elif fluctuation < 0.20:
+            score += 20
+            reasons.append(f"Nền ổn ({round(fluctuation*100, 1)}%)")
             
-        # 2. Tiêu chí Xu Hướng (MA20 > MA50)
+        # 2. Xu hướng
         if latest['Close'] > latest['SMA_20'] and latest['SMA_20'] > latest['SMA_50']:
             score += 20
-            reasons.append("Xu hướng Tăng")
+            reasons.append("Uptrend")
             
-        # 3. Tiêu chí Dòng Tiền (Volume hôm nay > TB 20 phiên)
-        avg_vol = df['Volume'].tail(20).mean()
-        if latest['Volume'] > avg_vol:
+        # 3. Dòng tiền
+        if latest['Volume'] > df['Volume'].tail(20).mean():
             score += 20
             reasons.append("Tiền vào")
             
-        # 4. RSI An toàn
-        if 40 <= latest['RSI_14'] <= 70:
-            score += 20
+        # 4. RSI
+        if 40 <= latest['RSI_14'] <= 70: score += 10
 
-        # Loại cổ phiếu rác giá < 5k
-        if latest['Close'] < 5000: return None
+        # --- LẬP KẾ HOẠCH TRADE (ENTRY - STOPLOSS - TARGET) ---
+        # Stoploss: Thủng đáy hộp 3 tháng - 1% (cho phép sai số)
+        stop_loss_price = int(min_price * 0.99)
+        
+        # Entry: Giá hiện tại
+        current_price = int(latest['Close'])
+        
+        # Target: Kỳ vọng lãi gấp 3 lần lỗ (R:R = 1:3) hoặc tối thiểu 15%
+        risk = current_price - stop_loss_price
+        if risk <= 0: risk = current_price * 0.05 # Phòng hờ lỗi dữ liệu
+        
+        target_price = int(current_price + (risk * 3))
+        # Nếu target quá thấp (<15%), ép target lên 15%
+        if (target_price - current_price)/current_price < 0.15:
+            target_price = int(current_price * 1.15)
 
         return {
             "Mã": symbol.replace(".VN", ""),
-            "Giá": f"{int(latest['Close']):,}",
-            "Biên độ 3T": f"{round(fluctuation*100, 1)}%",
+            "Giá Mua": f"{current_price:,}",
+            "Cắt Lỗ": f"{stop_loss_price:,}",
+            "Chốt Lời": f"{target_price:,}",
+            "Biên độ": f"{round(fluctuation*100, 1)}%",
             "Điểm AI": score,
-            "Tín hiệu": ", ".join(reasons) if reasons else "Theo dõi",
-            "Dataframe": df
+            "Lý do": ", ".join(reasons),
+            "Dataframe": df,
+            "Box_High": max_price, # Để vẽ biểu đồ
+            "Box_Low": min_price
         }
-    except Exception as e:
+    except:
         return None
 
-# --- 4. VẼ BIỂU ĐỒ ---
-def plot_chart(df, symbol):
-    fig = go.Figure()
+# --- 4. VẼ BIỂU ĐỒ TRADE PLAN ---
+def plot_trade_plan(data):
+    df = data['Dataframe']
+    symbol = data['Mã']
     
-    # Vẽ nến
+    fig = go.Figure()
+
+    # 1. Nến giá
     fig.add_trace(go.Candlestick(x=df.index,
                 open=df['Open'], high=df['High'],
                 low=df['Low'], close=df['Close'], name='Giá'))
     
-    # Vẽ hộp tích lũy 3 tháng (vùng hỗ trợ/kháng cự gần nhất)
-    df_3m = df.tail(60)
-    max_3m = df_3m['High'].max()
-    min_3m = df_3m['Low'].min()
-    
-    fig.add_hrect(y0=min_3m, y1=max_3m, line_width=0, fillcolor="yellow", opacity=0.2, annotation_text="Vùng biến động 3 tháng")
-    
+    # 2. Vùng Tích Lũy (Hộp Darvas)
+    fig.add_hrect(y0=data['Box_Low'], y1=data['Box_High'], 
+                  line_width=0, fillcolor="yellow", opacity=0.15,
+                  annotation_text="Vùng Gom Hàng (3 Tháng)")
+
+    # 3. Đường Cắt Lỗ (Đỏ)
+    sl_price = int(data['Cắt Lỗ'].replace(",",""))
+    fig.add_hline(y=sl_price, line_dash="dash", line_color="red", 
+                  annotation_text=f"STOPLOSS: {sl_price:,}", annotation_position="bottom right")
+
+    # 4. Đường Chốt Lời (Xanh lá)
+    tp_price = int(data['Chốt Lời'].replace(",",""))
+    fig.add_hline(y=tp_price, line_dash="dash", line_color="green", 
+                  annotation_text=f"TARGET: {tp_price:,}", annotation_position="top right")
+
+    # 5. MA20, MA50
     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='MA50'))
     
-    fig.update_layout(title=f"Biểu đồ kỹ thuật: {symbol}", xaxis_rangeslider_visible=False, height=500)
+    fig.update_layout(title=f"KẾ HOẠCH GIAO DỊCH: {symbol} (R:R Tối ưu)", 
+                      xaxis_rangeslider_visible=False, height=550)
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 5. GIAO DIỆN CHÍNH ---
 with st.sidebar:
-    st.header("🔍 BỘ LỌC TÍCH LŨY")
-    st.write("Tìm cổ phiếu đi ngang (Sideway) trong 3 tháng với biên độ hẹp.")
+    st.header("⚙️ THIẾT LẬP CHIẾN LƯỢC")
+    min_score = st.slider("Điểm AI tối thiểu", 0, 100, 40)
+    st.info("💡 Mẹo: Cổ phiếu có 'Biên độ' < 15% là những cơ hội tốt nhất.")
     
-    min_score = st.slider("Điểm AI tối thiểu", 0, 100, 50)
-    
-    if st.button("QUÉT TÍN HIỆU 🌪️", type="primary"):
+    if st.button("TÌM CƠ HỘI ĐẦU TƯ 🚀", type="primary"):
         run_app = True
     else:
         run_app = False
 
 if run_app:
     symbols = get_symbol_list()
-    status = st.status("📡 AI đang đo độ nén nền giá (3 tháng)...", expanded=True)
+    status = st.status("🤖 AI đang tính toán điểm Mua/Bán...", expanded=True)
     
     results = []
     bar = status.progress(0)
     
     for i, sym in enumerate(symbols):
-        data = analyze_stock_accumulation(sym)
+        data = analyze_stock_plan(sym)
         if data and data['Điểm AI'] >= min_score:
             results.append(data)
         bar.progress((i+1)/len(symbols))
         
-    status.update(label="✅ Đã quét xong!", state="complete", expanded=False)
+    status.update(label="✅ Hoàn tất!", state="complete", expanded=False)
     
     if results:
         df_res = pd.DataFrame(results).sort_values(by="Điểm AI", ascending=False)
         
-        # Thống kê nhanh
-        st.success(f"Tìm thấy {len(df_res)} mã tiềm năng theo tiêu chí của bạn.")
+        st.success(f"Phát hiện {len(df_res)} mã tiềm năng!")
         
-        # Hiển thị bảng kết quả
+        # HIỂN THỊ BẢNG KẾ HOẠCH (Highlight các cột quan trọng)
         st.dataframe(
-            df_res[['Mã', 'Giá', 'Biên độ 3T', 'Điểm AI', 'Tín hiệu']], 
+            df_res[['Mã', 'Giá Mua', 'Cắt Lỗ', 'Chốt Lời', 'Biên độ', 'Điểm AI', 'Lý do']],
             use_container_width=True
         )
         
         st.divider()
-        st.subheader("🧐 SOI BIỂU ĐỒ & HỘP DARVAS")
-        choice = st.selectbox("Chọn mã để xem vùng tích lũy:", df_res['Mã'])
+        st.subheader("📊 BIỂU ĐỒ KẾ HOẠCH GIAO DỊCH")
+        col1, col2 = st.columns([1, 3])
         
-        # Lấy data và vẽ chart
-        target = next(item for item in results if item["Mã"] == choice)
-        plot_chart(target['Dataframe'], choice)
-        
+        with col1:
+            choice = st.radio("Chọn mã xem chi tiết:", df_res['Mã'])
+            
+            # Hiển thị lại thông số nhanh
+            selected_data = next(item for item in results if item["Mã"] == choice)
+            st.markdown("---")
+            st.metric("Mục tiêu Lợi nhuận", selected_data['Chốt Lời'])
+            st.metric("Rủi ro Cắt lỗ", selected_data['Cắt Lỗ'], delta_color="inverse")
+            
+        with col2:
+            plot_trade_plan(selected_data)
+            
     else:
-        st.warning("Không tìm thấy mã nào. Hãy thử hạ điểm lọc xuống!")
+        st.warning("Thị trường biến động mạnh! Không có mã nào tích lũy < 15% và đủ điểm.")
 else:
-    st.info("👈 Bấm nút 'QUÉT TÍN HIỆU' để bắt đầu.")
+    st.info("👈 Bấm nút để AI lập kế hoạch giao dịch cho bạn.")
