@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # --- 1. CẤU HÌNH GIAO DIỆN ---
 st.set_page_config(page_title="AI Trading Pro + Financials", layout="wide", page_icon="💎")
 st.title("💎 HỆ THỐNG ĐỊNH GIÁ & TÍN HIỆU (FULL OPTION)")
-st.caption("Kết hợp: Phân tích Kỹ thuật (VSA) + Phân tích Cơ bản (P/E, EPS, P/B, Cổ tức)")
+st.caption("Chiến lược: Lọc Kỹ thuật trước -> Lọc Cơ bản sau (Tối ưu tốc độ)")
 
 # --- 2. KHO DỮ LIỆU ---
 def get_stock_universe(sector_choice):
@@ -18,7 +18,7 @@ def get_stock_universe(sector_choice):
     # BẤT ĐỘNG SẢN & KCN
     real_estate = ["VHM", "VIC", "VRE", "NVL", "PDR", "KDH", "DIG", "CEO", "DXG", "NLG", "KBC", "IDC", "SZC", "GVR", "HDG", "NTC", "SIP", "PHR"]
     # THÉP & SẢN XUẤT
-    production = ["HPG", "HSG", "NKG", "DGC", "CSV", "VHC", "ANV", "FMC", "PTB"]
+    production = ["HPG", "HSG", "NKG", "DGC", "CSV", "VHC", "ANV", "FMC", "MPC, "PTB"]
     # VN30 KHÁC
     vn30_other = ["MWG", "FPT", "PNJ", "MSN", "GAS", "PLX", "POW", "SAB", "VNM", "BVH", "REE", "GMD"]
 
@@ -46,44 +46,50 @@ def safe_get(data_dict, key, default=None):
     if not data_dict: return default
     return data_dict.get(key, default)
 
-# --- 4. HÀM PHÂN TÍCH KÉP (KỸ THUẬT + CƠ BẢN) ---
+# --- 4. HÀM PHÂN TÍCH ---
 def analyze_stock_full(symbol):
     try:
-        # A. LẤY DỮ LIỆU KỸ THUẬT (History)
+        # BƯỚC 1: LẤY DỮ LIỆU GIÁ TRƯỚC (NHANH)
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="1y")
         
         if df is None or len(df) < 150: return None
         
-        # B. LẤY DỮ LIỆU CƠ BẢN (Financial Info)
-        # Sử dụng try-except riêng cho phần info để tránh crash nếu Yahoo chặn
-        try:
-            info = ticker.info 
-        except:
-            info = {}
-        
-        # --- XỬ LÝ KỸ THUẬT ---
+        # --- LỌC KỸ THUẬT SƠ BỘ ---
+        latest = df.iloc[-1]
+        # Nếu thanh khoản quá thấp hoặc giá trà đá -> BỎ QUA NGAY (Không tải báo cáo tài chính nữa)
+        if latest['Close'] < 5000 or latest['Volume'] < 20000: return None
+
+        # Tính chỉ báo
         df.ta.sma(length=20, append=True)
         df.ta.sma(length=50, append=True)
         df.ta.sma(length=200, append=True)
         df.ta.rsi(length=14, append=True)
-        latest = df.iloc[-1]
         
-        # Điều kiện lọc rác
-        if latest['Close'] < 5000 or latest['Volume'] < 20000: return None
-
-        # Tính toán nền giá
+        # Nếu đang Uptrend hoặc có Tích lũy nền chặt -> Mới đi tiếp
+        # (Điều kiện lỏng một chút để không bỏ sót cơ hội)
+        trend_ok = (latest['Close'] > latest['SMA_50'])
+        
         df_3m = df.tail(60)
         fluctuation = (df_3m['High'].max() - df_3m['Low'].min()) / df_3m['Low'].min()
+        base_ok = (fluctuation < 0.25)
         
-        # --- C. CHẤM ĐIỂM (VIP SCORE) ---
+        if not (trend_ok or base_ok): return None # Loại ngay nếu xấu
+        
+        # BƯỚC 2: LẤY DỮ LIỆU CƠ BẢN (CHẬM - CHỈ LẤY CHO MÃ TỐT)
+        try:
+            info = ticker.info 
+        except:
+            info = {}
+            
+        # --- CHẤM ĐIỂM (SCORING) ---
         score = 0
         details = []
 
         # 1. Kỹ thuật (60đ)
         if latest['Close'] > latest['SMA_20']: score += 10
         if latest['SMA_20'] > latest['SMA_50']: score += 15
-        if latest['Close'] > latest['SMA_200']: score += 10 # Uptrend dài hạn
+        if latest['Close'] > latest['SMA_200']: score += 10
         
         if fluctuation < 0.15: 
             score += 25
@@ -95,33 +101,29 @@ def analyze_stock_full(symbol):
             score += 5
             details.append("Tiền vào")
 
-        # 2. Cơ bản (40đ) - Dữ liệu lấy từ info
+        # 2. Cơ bản (40đ)
         pe = safe_get(info, 'trailingPE')
         pb = safe_get(info, 'priceToBook')
         roe = safe_get(info, 'returnOnEquity')
         div_yield = safe_get(info, 'dividendYield')
         
-        # Logic chấm điểm cơ bản
-        if pe and 5 < pe < 20: # P/E hợp lý
-            score += 10
-        if pb and pb < 3: # P/B không quá cao
-            score += 10
-        if roe and roe > 0.15: # ROE > 15%
+        if pe and 5 < pe < 20: score += 10
+        if pb and pb < 3: score += 10
+        if roe and roe > 0.15: 
             score += 10
             details.append("ROE cao")
-        if div_yield and div_yield > 0.03: # Cổ tức > 3%
+        if div_yield and div_yield > 0.03: 
             score += 10
             details.append("Cổ tức tốt")
 
-        # D. TỔNG HỢP DỮ LIỆU HIỂN THỊ
+        # Dữ liệu hiển thị
         market_cap = safe_get(info, 'marketCap')
         shares = safe_get(info, 'sharesOutstanding')
         eps = safe_get(info, 'trailingEps')
 
-        # Xếp hạng
         rating = "THEO DÕI"
         if score >= 80: rating = "💎 MUA MẠNH"
-        elif score >= 65: rating = "✅ MUA/NẮM GIỮ"
+        elif score >= 60: rating = "✅ KHẢ QUAN"
         
         stop_loss = int(df_3m['Low'].min() * 0.98)
         target = int(latest['Close'] * 1.15)
@@ -131,7 +133,6 @@ def analyze_stock_full(symbol):
             "Giá": int(latest['Close']),
             "Điểm": score,
             "Xếp hạng": rating,
-            # --- CHỈ SỐ TÀI CHÍNH ---
             "P/E": round(pe, 1) if pe else "-",
             "EPS": f"{int(eps):,}" if eps else "-",
             "P/B": round(pb, 1) if pb else "-",
@@ -139,7 +140,6 @@ def analyze_stock_full(symbol):
             "ROE": f"{round(roe*100, 1)}%" if roe else "-",
             "Vốn hóa": format_volume(market_cap),
             "KLCP Lưu hành": format_volume(shares),
-            # ---------------------------
             "Lý do": ", ".join(details),
             "Cắt Lỗ": f"{stop_loss:,}",
             "Chốt Lời": f"{target:,}",
@@ -147,7 +147,7 @@ def analyze_stock_full(symbol):
             "Box_High": df_3m['High'].max(),
             "Box_Low": df_3m['Low'].min()
         }
-    except Exception as e:
+    except:
         return None
 
 # --- 5. VẼ BIỂU ĐỒ ---
@@ -159,7 +159,7 @@ def plot_chart(data):
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'))
     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'))
     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='MA50'))
-    fig.add_hrect(y0=data['Box_Low'], y1=data['Box_High'], line_width=0, fillcolor="yellow", opacity=0.15, annotation_text="Nền Tích Lũy")
+    fig.add_hrect(y0=data['Box_Low'], y1=data['Box_High'], line_width=0, fillcolor="yellow", opacity=0.15, annotation_text="Vùng Gom")
     
     fig.update_layout(title=f"BIỂU ĐỒ: {symbol} (P/E: {data['P/E']} | EPS: {data['EPS']})", xaxis_rangeslider_visible=False, height=500)
     st.plotly_chart(fig, use_container_width=True)
@@ -170,18 +170,15 @@ with st.sidebar:
     sector_options = ["QUÉT TOÀN BỘ (ALL)", "Ngân hàng", "Chứng khoán", "Bất động sản", "Thép & SX", "VN30"]
     selected_sectors = st.multiselect("Chọn ngành:", sector_options, default=["VN30"])
     
-    min_score = st.slider("Điểm tối thiểu", 0, 100, 60)
+    min_score = st.slider("Điểm tối thiểu", 0, 100, 50)
     
-    # Nút bấm kích hoạt
     if st.button("QUÉT CHI TIẾT 🚀", type="primary"):
         st.session_state['trigger'] = True
 
-# XỬ LÝ LOGIC (Lưu vào Session State)
 if st.session_state.get('trigger'):
     symbols = get_stock_universe(selected_sectors)
     
-    # Thông báo rõ ràng để người dùng chờ đợi
-    with st.spinner(f"Đang tải dữ liệu Kỹ thuật & Báo cáo tài chính cho {len(symbols)} mã... (Quá trình này có thể mất 1-2 phút)"):
+    with st.spinner(f"Đang phân tích {len(symbols)} mã... (Lọc kỹ thuật trước -> Lọc cơ bản sau)"):
         results = []
         bar = st.progress(0)
         
@@ -198,16 +195,14 @@ if st.session_state.get('trigger'):
         else:
             st.session_state['results'] = None
             
-    st.session_state['trigger'] = False # Tắt nút sau khi chạy xong
+    st.session_state['trigger'] = False
 
-# HIỂN THỊ KẾT QUẢ TỪ SESSION STATE
 if 'results' in st.session_state and st.session_state['results'] is not None:
     df = st.session_state['results']
     data_list = st.session_state['raw_data']
     
-    st.success(f"✅ Tìm thấy {len(df)} mã tiềm năng (Vừa có Trend, vừa có Cơ bản tốt)!")
+    st.success(f"✅ Tìm thấy {len(df)} mã tiềm năng!")
     
-    # 1. BẢNG DỮ LIỆU TỔNG HỢP
     st.dataframe(
         df[['Mã', 'Giá', 'Điểm', 'Xếp hạng', 'P/E', 'EPS', 'P/B', 'ROE', 'Cổ tức', 'Vốn hóa', 'Lý do']],
         use_container_width=True,
@@ -216,12 +211,10 @@ if 'results' in st.session_state and st.session_state['results'] is not None:
     
     st.divider()
     
-    # 2. KHU VỰC SOI CHI TIẾT
     st.subheader("📊 HỒ SƠ DOANH NGHIỆP & BIỂU ĐỒ")
     c1, c2 = st.columns([1, 3])
     
     with c1:
-        # Chọn mã để xem
         if len(df['Mã']) > 0:
             choice = st.selectbox("Chọn mã xem chi tiết:", df['Mã'].tolist())
             item = next((x for x in data_list if x["Mã"] == choice), None)
@@ -236,7 +229,6 @@ if 'results' in st.session_state and st.session_state['results'] is not None:
                 st.markdown(f"**🎁 Cổ tức:** {item['Cổ tức']}")
                 st.markdown(f"**🏢 Vốn hóa:** {item['Vốn hóa']}")
                 st.markdown(f"**📦 KLCP:** {item['KLCP Lưu hành']}")
-                
                 st.warning(f"🛑 Cắt lỗ: {item['Cắt Lỗ']}")
                 st.success(f"🎯 Chốt lời: {item['Chốt Lời']}")
             
@@ -245,6 +237,6 @@ if 'results' in st.session_state and st.session_state['results'] is not None:
             plot_chart(item)
 
 elif 'results' in st.session_state and st.session_state['results'] is None:
-    st.warning("Không tìm thấy mã nào đạt chuẩn.")
+    st.warning("Không tìm thấy mã nào đạt chuẩn. Hãy thử hạ điểm số xuống thấp hơn!")
 else:
-    st.info("👈 Chọn ngành và bấm 'QUÉT CHI TIẾT' (Lưu ý: Quét Full sẽ mất vài phút).")
+    st.info("👈 Chọn ngành và bấm 'QUÉT CHI TIẾT'.")
