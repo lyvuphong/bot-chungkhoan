@@ -161,4 +161,78 @@ def plot_chart(data):
     df = data['Dataframe']
     symbol = data['Mã']
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='MA50'))
+    fig.update_layout(title=f"Biểu đồ: {symbol}", height=500, xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- 5. GIAO DIỆN CHÍNH ---
+with st.sidebar:
+    st.header("🎛️ BỘ LỌC THỊ TRƯỜNG")
+    
+    # Cập nhật danh sách ngành mới
+    sectors = [
+        "QUÉT TOÀN BỘ (ALL)", 
+        "VN100",
+        "Midcap Khác",
+        "Ngân hàng", 
+        "Chứng khoán", 
+        "Bất động sản", 
+        "Thép",
+        "Thủy sản (MPC, VHC...)",
+        "VN30"
+    ]
+    
+    choice = st.multiselect("Chọn nhóm ngành:", sectors, default=["Thủy sản (MPC, VHC...)"])
+    
+    st.caption("ℹ️ Chọn 'VN100' hoặc 'Midcap Khác' để quét rộng hơn.")
+    min_score = st.slider("Điểm tối thiểu", 0, 100, 50)
+    
+    btn_scan = st.button("BẮT ĐẦU QUÉT 🚀", type="primary")
+
+# LOGIC CHẠY
+if btn_scan:
+    symbols = get_stock_universe(choice)
+    
+    status_text = st.empty()
+    progress = st.progress(0)
+    results = []
+    
+    # Quét từng mã
+    for i, sym in enumerate(symbols):
+        status_text.text(f"Đang phân tích: {sym} ({i+1}/{len(symbols)})...")
+        
+        data = analyze_stock_detailed(sym)
+        if data and data['Điểm'] >= min_score:
+            results.append(data)
+            
+        progress.progress((i+1)/len(symbols))
+            
+    # HIỂN THỊ KẾT QUẢ
+    status_text.empty()
+    if results:
+        df_res = pd.DataFrame(results).sort_values(by="Điểm", ascending=False)
+        st.success(f"🎉 Hoàn tất! Tìm thấy {len(df_res)} mã.")
+        
+        # Bảng
+        st.dataframe(
+            df_res[['Mã', 'Giá', 'Điểm', 'Xếp hạng', 'P/E', 'EPS', 'P/B', 'ROE', 'Cổ tức', 'Lý do']],
+            use_container_width=True,
+            height=600
+        )
+        
+        # Chart
+        st.divider()
+        st.subheader("📈 Xem Biểu Đồ")
+        stock_options = df_res['Mã'].tolist()
+        if stock_options:
+            selected = st.selectbox("Chọn mã:", stock_options)
+            item = next((x for x in results if x['Mã'] == selected), None)
+            if item:
+                plot_chart(item)
+    else:
+        st.error("Không tìm thấy mã nào! Hãy thử hạ điểm số hoặc chọn ngành khác.")
+
+else:
+    st.info("👈 Chọn ngành bên trái (Ví dụ: Thủy sản, VN100...) và bấm nút.")
