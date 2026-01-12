@@ -37,13 +37,14 @@ def get_stock_universe(sector_choice):
 
 # --- 3. HÀM CHUYỂN ĐỔI SỐ LIỆU ---
 def format_volume(num):
+    if num is None: return "-"
     if num >= 1_000_000_000: return f"{round(num/1_000_000_000, 2)} Tỷ"
     if num >= 1_000_000: return f"{round(num/1_000_000, 2)} Tr"
     return f"{num:,}"
 
-def safe_get(data_dict, key, default="-"):
-    val = data_dict.get(key)
-    return val if val is not None else default
+def safe_get(data_dict, key, default=None):
+    if not data_dict: return default
+    return data_dict.get(key, default)
 
 # --- 4. HÀM PHÂN TÍCH KÉP (KỸ THUẬT + CƠ BẢN) ---
 def analyze_stock_full(symbol):
@@ -55,8 +56,11 @@ def analyze_stock_full(symbol):
         if df is None or len(df) < 150: return None
         
         # B. LẤY DỮ LIỆU CƠ BẢN (Financial Info)
-        # Lưu ý: info có thể làm chậm tốc độ quét
-        info = ticker.info 
+        # Sử dụng try-except riêng cho phần info để tránh crash nếu Yahoo chặn
+        try:
+            info = ticker.info 
+        except:
+            info = {}
         
         # --- XỬ LÝ KỸ THUẬT ---
         df.ta.sma(length=20, append=True)
@@ -92,16 +96,14 @@ def analyze_stock_full(symbol):
             details.append("Tiền vào")
 
         # 2. Cơ bản (40đ) - Dữ liệu lấy từ info
-        pe = safe_get(info, 'trailingPE', None)
-        pb = safe_get(info, 'priceToBook', None)
-        roe = safe_get(info, 'returnOnEquity', 0)
-        div_yield = safe_get(info, 'dividendYield', 0)
+        pe = safe_get(info, 'trailingPE')
+        pb = safe_get(info, 'priceToBook')
+        roe = safe_get(info, 'returnOnEquity')
+        div_yield = safe_get(info, 'dividendYield')
         
         # Logic chấm điểm cơ bản
-        is_good_fundamental = False
         if pe and 5 < pe < 20: # P/E hợp lý
             score += 10
-            is_good_fundamental = True
         if pb and pb < 3: # P/B không quá cao
             score += 10
         if roe and roe > 0.15: # ROE > 15%
@@ -112,9 +114,9 @@ def analyze_stock_full(symbol):
             details.append("Cổ tức tốt")
 
         # D. TỔNG HỢP DỮ LIỆU HIỂN THỊ
-        market_cap = safe_get(info, 'marketCap', 0)
-        shares = safe_get(info, 'sharesOutstanding', 0)
-        eps = safe_get(info, 'trailingEps', 0)
+        market_cap = safe_get(info, 'marketCap')
+        shares = safe_get(info, 'sharesOutstanding')
+        eps = safe_get(info, 'trailingEps')
 
         # Xếp hạng
         rating = "THEO DÕI"
@@ -129,11 +131,11 @@ def analyze_stock_full(symbol):
             "Giá": int(latest['Close']),
             "Điểm": score,
             "Xếp hạng": rating,
-            # --- CHỈ SỐ TÀI CHÍNH MỚI ---
+            # --- CHỈ SỐ TÀI CHÍNH ---
             "P/E": round(pe, 1) if pe else "-",
             "EPS": f"{int(eps):,}" if eps else "-",
             "P/B": round(pb, 1) if pb else "-",
-            "Cổ tức": f"{round(div_yield*100, 1)}%" if div_yield else "0%",
+            "Cổ tức": f"{round(div_yield*100, 1)}%" if div_yield else "-",
             "ROE": f"{round(roe*100, 1)}%" if roe else "-",
             "Vốn hóa": format_volume(market_cap),
             "KLCP Lưu hành": format_volume(shares),
@@ -170,13 +172,16 @@ with st.sidebar:
     
     min_score = st.slider("Điểm tối thiểu", 0, 100, 60)
     
+    # Nút bấm kích hoạt
     if st.button("QUÉT CHI TIẾT 🚀", type="primary"):
         st.session_state['trigger'] = True
 
+# XỬ LÝ LOGIC (Lưu vào Session State)
 if st.session_state.get('trigger'):
     symbols = get_stock_universe(selected_sectors)
     
-    with st.spinner(f"Đang tải dữ liệu Kỹ thuật & Báo cáo tài chính cho {len(symbols)} mã... (Sẽ lâu hơn bình thường)"):
+    # Thông báo rõ ràng để người dùng chờ đợi
+    with st.spinner(f"Đang tải dữ liệu Kỹ thuật & Báo cáo tài chính cho {len(symbols)} mã... (Quá trình này có thể mất 1-2 phút)"):
         results = []
         bar = st.progress(0)
         
@@ -193,7 +198,7 @@ if st.session_state.get('trigger'):
         else:
             st.session_state['results'] = None
             
-    st.session_state['trigger'] = False
+    st.session_state['trigger'] = False # Tắt nút sau khi chạy xong
 
 # HIỂN THỊ KẾT QUẢ TỪ SESSION STATE
 if 'results' in st.session_state and st.session_state['results'] is not None:
@@ -216,25 +221,30 @@ if 'results' in st.session_state and st.session_state['results'] is not None:
     c1, c2 = st.columns([1, 3])
     
     with c1:
-        choice = st.selectbox("Chọn mã xem chi tiết:", df['Mã'].tolist())
-        item = next((x for x in data_list if x["Mã"] == choice), None)
-        
-        if item:
-            st.metric("Xếp hạng", item['Xếp hạng'], f"{item['Điểm']}/100")
-            st.markdown("---")
-            st.markdown(f"**💰 Giá:** {item['Giá']:,}")
-            st.markdown(f"**📉 P/E:** {item['P/E']}")
-            st.markdown(f"**💵 EPS:** {item['EPS']}")
-            st.markdown(f"**📊 P/B:** {item['P/B']}")
-            st.markdown(f"**🎁 Cổ tức:** {item['Cổ tức']}")
-            st.markdown(f"**🏢 Vốn hóa:** {item['Vốn hóa']}")
-            st.markdown(f"**📦 KLCP:** {item['KLCP Lưu hành']}")
+        # Chọn mã để xem
+        if len(df['Mã']) > 0:
+            choice = st.selectbox("Chọn mã xem chi tiết:", df['Mã'].tolist())
+            item = next((x for x in data_list if x["Mã"] == choice), None)
             
-            st.warning(f"🛑 Cắt lỗ: {item['Cắt Lỗ']}")
-            st.success(f"🎯 Chốt lời: {item['Chốt Lời']}")
+            if item:
+                st.metric("Xếp hạng", item['Xếp hạng'], f"{item['Điểm']}/100")
+                st.markdown("---")
+                st.markdown(f"**💰 Giá:** {item['Giá']:,}")
+                st.markdown(f"**📉 P/E:** {item['P/E']}")
+                st.markdown(f"**💵 EPS:** {item['EPS']}")
+                st.markdown(f"**📊 P/B:** {item['P/B']}")
+                st.markdown(f"**🎁 Cổ tức:** {item['Cổ tức']}")
+                st.markdown(f"**🏢 Vốn hóa:** {item['Vốn hóa']}")
+                st.markdown(f"**📦 KLCP:** {item['KLCP Lưu hành']}")
+                
+                st.warning(f"🛑 Cắt lỗ: {item['Cắt Lỗ']}")
+                st.success(f"🎯 Chốt lời: {item['Chốt Lời']}")
             
     with c2:
-        if item:
+        if 'item' in locals() and item:
             plot_chart(item)
 
-elif 'results' in st.
+elif 'results' in st.session_state and st.session_state['results'] is None:
+    st.warning("Không tìm thấy mã nào đạt chuẩn.")
+else:
+    st.info("👈 Chọn ngành và bấm 'QUÉT CHI TIẾT' (Lưu ý: Quét Full sẽ mất vài phút).")
