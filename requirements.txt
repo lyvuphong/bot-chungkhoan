@@ -2,5 +2,4 @@ streamlit
 pandas
 pandas_ta
 vnstock
-lxml
-requests
+plotly
