@@ -2,183 +2,155 @@ import streamlit as st
 import pandas as pd
 import pandas_ta as ta
 from vnstock import *
-from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# --- 1. CẤU HÌNH GIAO DIỆN CHUYÊN NGHIỆP ---
-st.set_page_config(page_title="AI Trading Pro", layout="wide", page_icon="💎")
+# --- 1. CẤU HÌNH GIAO DIỆN ---
+st.set_page_config(page_title="AI Trading Pro", layout="wide", page_icon="📈")
+st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 10px;}</style>""", unsafe_allow_html=True)
 
-st.markdown("""
-<style>
-    .metric-card {background-color: #f0f2f6; border-radius: 10px; padding: 15px; text-align: center;}
-    .stProgress > div > div > div > div { background-color: #4CAF50; }
-</style>
-""", unsafe_allow_html=True)
+st.title("📈 HỆ THỐNG TRUY VẤN & PHÂN TÍCH CỔ PHIẾU AI")
+st.caption("Developed by VuPhong | Data: VNStock | Strategy: Trend + Momentum")
 
-st.title("💎 HỆ THỐNG TRUY VẤN CỔ PHIẾU CHUYÊN SÂU (AI PRO)")
-st.caption("Chiến lược: Trend Following + VSA Breakdown | Nguồn: VN100/HOSE")
-
-# --- 2. HÀM XỬ LÝ DỮ LIỆU & CHẤM ĐIỂM ---
-@st.cache_data(ttl=3600) # Lưu bộ nhớ đệm 1 tiếng để chạy nhanh hơn
-def get_market_symbols():
-    # Lấy danh sách VN30 và VNMID (Đại diện cho nhóm cổ phiếu tốt)
-    # Để demo nhanh chúng ta dùng danh sách cứng các mã tốt nhất thị trường
-    # Bạn có thể mở rộng list này sau
+# --- 2. HÀM DATA & XỬ LÝ ---
+@st.cache_data(ttl=3600)
+def get_symbol_list():
+    # Danh sách VN100 + Các mã hot (Mở rộng để bắt nhiều cơ hội hơn)
     return [
         "FPT", "MWG", "HPG", "VCB", "TCB", "MBB", "ACB", "STB", "VIP", "VRE",
         "VHM", "VIC", "MSN", "GAS", "POW", "PLX", "VNM", "SAB", "GVR", "KDH",
         "PDR", "SSI", "VCI", "HCM", "VND", "DGC", "DXG", "NKG", "HSG", "DBC",
         "FRT", "PNJ", "REE", "GEX", "VGC", "IDC", "KBC", "SZC", "PC1", "HDG",
-        "ANV", "VHC", "FTS", "BSI", "CTS", "DIG", "CEO", "NVL", "HDB", "TPB"
+        "ANV", "VHC", "FTS", "BSI", "CTS", "DIG", "CEO", "NVL", "HDB", "TPB",
+        "DGW", "HAH", "VOS", "PVD", "PVS", "PVT", "VIX", "ORS", "TCH", "HUT"
     ]
 
-def calculate_score(df):
-    """Hàm chấm điểm sức mạnh cổ phiếu theo thang 100"""
-    score = 0
-    reasons = []
-    
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    # 1. Xu hướng dài hạn (MA50/MA200) - Trọng số: 30 điểm
-    if latest['close'] > latest['MA50']:
-        score += 20
-        reasons.append("Trên MA50")
-    if latest['close'] > latest['MA200']:
-        score += 10
-        reasons.append("Uptrend dài hạn")
-        
-    # 2. Dòng tiền (Volume) - Trọng số: 20 điểm
-    vol_ratio = latest['volume'] / latest['VOL_MA20']
-    if vol_ratio > 1.2: # Vol nổ > 120% trung bình
-        score += 20
-        reasons.append(f"Tiền vào mạnh (x{round(vol_ratio,1)})")
-    elif vol_ratio > 0.8:
-        score += 10
-        
-    # 3. Động lượng (RSI) - Trọng số: 20 điểm
-    if 50 <= latest['RSI'] <= 70:
-        score += 20 # Vùng tăng giá mạnh nhất
-        reasons.append("RSI Sức mạnh")
-    elif 40 < latest['RSI'] < 50:
-        score += 10 # Vùng phục hồi
-        
-    # 4. Tích lũy (Bollinger Band) - Trọng số: 15 điểm
-    # Bandwidth thấp nghĩa là đang thắt nút cổ chai (tích lũy)
-    bandwidth = (latest['BBU_20_2.0'] - latest['BBL_20_2.0']) / latest['MA20']
-    if bandwidth < 0.15: # Biên độ hẹp < 15%
-        score += 15
-        reasons.append("Nền giá chặt")
-        
-    # 5. Xu hướng ngắn hạn (MA20) - Trọng số: 15 điểm
-    if latest['close'] > latest['MA20']:
-        score += 15
-        
-    return score, ", ".join(reasons)
-
-def analyze_stock_pro(symbol):
+def analyze_stock_ultimate(symbol):
     try:
-        # Lấy dữ liệu 1 năm
+        # Lấy dữ liệu dài hơn để vẽ chart (1 năm)
         df = stock_historical_data(symbol, "2025-01-01", "2026-01-13", "1D", "stock")
-        if df is None or len(df) < 200: return None
+        if df is None or len(df) < 100: return None
         
-        # Tính toán chỉ báo
+        # Chỉ báo kỹ thuật
         df.ta.sma(length=20, append=True)
         df.ta.sma(length=50, append=True)
-        df.ta.sma(length=200, append=True)
         df.ta.rsi(length=14, append=True)
-        df.ta.bbands(length=20, std=2, append=True)
         
-        # Tính Volume MA20 thủ công để tránh lỗi tên cột
-        df['VOL_MA20'] = df['volume'].rolling(window=20).mean()
-        
-        # Lấy dữ liệu mới nhất
-        df = df.dropna() # Loại bỏ dữ liệu lỗi
-        if df.empty: return None
-        
+        # Lấy nến mới nhất
         latest = df.iloc[-1]
         
-        # Logic lọc cơ bản: Giá > 10k & Vol > 100k (Loại bỏ rác)
-        if latest['close'] < 10000 or latest['volume'] < 100000:
-            return None
-
-        # Chấm điểm
-        confidence, reason = calculate_score(df)
+        # --- HỆ THỐNG CHẤM ĐIỂM (SCORING) ---
+        score = 0
+        reasons = []
         
-        # Lấy thông tin cơ bản
-        recommendation = "MUA MẠNH" if confidence >= 80 else ("MUA" if confidence >= 70 else "THEO DÕI")
-        
+        # 1. Trend (40đ)
+        if latest['close'] > latest['MA20']: score += 20
+        if latest['MA20'] > latest['MA50']: 
+            score += 20
+            reasons.append("Uptrend")
+            
+        # 2. RSI (30đ)
+        if 45 <= latest['RSI'] <= 70: 
+            score += 30
+            reasons.append("RSI Khỏe")
+        elif latest['RSI'] > 70:
+            score += 10
+            reasons.append("RSI Nóng")
+            
+        # 3. Thanh khoản (30đ) - So với hôm qua
+        if latest['volume'] > df.iloc[-2]['volume']:
+            score += 30
+            reasons.append("Tiền vào")
+            
         return {
-            "Mã CK": symbol,
+            "Mã": symbol,
             "Giá": int(latest['close']),
-            "Biến động": f"{round((latest['close'] - df.iloc[-2]['close'])/df.iloc[-2]['close']*100, 2)}%",
             "RSI": round(latest['RSI'], 1),
-            "Khối lượng": f"{int(latest['volume']/1000)}K",
-            "Độ tin cậy": confidence,
-            "Lý do AI chọn": reason,
-            "Khuyến nghị": recommendation
+            "Điểm AI": score,
+            "Tín hiệu": ", ".join(reasons) if reasons else "Yếu",
+            "Dataframe": df # Lưu lại data để vẽ chart sau
         }
-    except Exception as e:
+    except:
         return None
 
-# --- 3. GIAO DIỆN ĐIỀU KHIỂN ---
+# --- 3. VẼ BIỂU ĐỒ NẾN ---
+def plot_chart(df, symbol):
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+    # Nến
+    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'],
+                low=df['low'], close=df['close'], name='Giá'), row=1, col=1)
+    
+    # MA20, MA50
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1), name='MA50'), row=1, col=1)
+
+    # Volume
+    fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Vol', marker_color='teal'), row=2, col=1)
+
+    fig.update_layout(title=f"Biểu đồ kỹ thuật: {symbol}", xaxis_rangeslider_visible=False, height=500)
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- 4. GIAO DIỆN CHÍNH ---
 with st.sidebar:
-    st.header("⚙️ BỘ LỌC ĐIỀU KIỆN")
-    min_score = st.slider("Độ tin cậy tối thiểu (%)", 50, 90, 70)
-    top_n = st.number_input("Số lượng hiển thị", 10, 50, 20)
-    st.markdown("---")
-    if st.button("🚀 KÍCH HOẠT HỆ THỐNG", use_container_width=True):
-        run_analysis = True
-    else:
-        run_analysis = False
+    st.header("🎛️ BẢNG ĐIỀU KHIỂN")
+    # Cho phép chỉnh điểm thấp xuống để test
+    min_score = st.slider("Điểm lọc tối thiểu", 0, 100, 50) 
+    st.info("💡 Mẹo: Hạ điểm xuống 50 nếu thị trường xấu để tìm cơ hội hồi phục.")
+    
+    btn_scan = st.button("QUÉT THỊ TRƯỜNG NGAY 🚀", type="primary")
 
-# --- 4. MÀN HÌNH KẾT QUẢ ---
-if run_analysis:
-    symbols = get_market_symbols()
-    st.info(f"Đang quét dữ liệu chuyên sâu {len(symbols)} mã Bluechip & Midcap tiềm năng...")
+# LOGIC CHẠY
+if btn_scan:
+    symbols = get_symbol_list()
+    status = st.status("🤖 AI đang phân tích dữ liệu thị trường...", expanded=True)
     
-    results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    valid_stocks = []
     
+    # Thanh tiến trình
+    progress_bar = status.progress(0)
     for i, sym in enumerate(symbols):
-        status_text.text(f"AI đang phân tích: {sym} ({i+1}/{len(symbols)})")
-        data = analyze_stock_pro(sym)
-        if data and data['Độ tin cậy'] >= min_score:
-            results.append(data)
-        progress_bar.progress((i + 1) / len(symbols))
+        res = analyze_stock_ultimate(sym)
+        if res and res['Điểm AI'] >= min_score:
+            valid_stocks.append(res)
+        progress_bar.progress((i+1)/len(symbols))
         
-    status_text.empty()
-    progress_bar.empty()
-    
-    if results:
-        # Chuyển thành DataFrame và Sắp xếp
-        df_res = pd.DataFrame(results)
-        df_res = df_res.sort_values(by="Độ tin cậy", ascending=False).head(top_n)
-        
-        # Hiển thị Metrics tổng quan
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Số mã đạt chuẩn", len(df_res))
-        c2.metric("Điểm TB Top 5", f"{round(df_res.head(5)['Độ tin cậy'].mean(), 1)}/100")
-        c3.metric("Mã mạnh nhất", df_res.iloc[0]['Mã CK'])
-        
-        st.subheader(f"🏆 DANH MỤC TOP {top_n} CỔ PHIẾU KHUYẾN NGHỊ")
-        
-        # Tô màu bảng kết quả
-        def color_highlight(val):
-            color = '#d4edda' if val == 'MUA MẠNH' else '#fff3cd' if val == 'MUA' else 'white'
-            return f'background-color: {color}; color: black'
+    status.update(label="✅ Đã hoàn tất phân tích!", state="complete", expanded=False)
 
+    if valid_stocks:
+        # Sắp xếp mã điểm cao nhất lên đầu
+        df_show = pd.DataFrame(valid_stocks).sort_values(by="Điểm AI", ascending=False)
+        
+        # 1. Hiển thị Metrics Top 3
+        st.subheader("🏆 TOP 3 CỔ PHIẾU MẠNH NHẤT")
+        cols = st.columns(3)
+        for idx, col in enumerate(cols):
+            if idx < len(df_show):
+                stock = df_show.iloc[idx]
+                col.metric(
+                    label=f"{stock['Mã']} ({stock['Tín hiệu']})",
+                    value=f"{stock['Giá']:,} VNĐ",
+                    delta=f"AI Score: {stock['Điểm AI']}/100"
+                )
+        
+        # 2. Bảng chi tiết
+        st.subheader("📋 DANH SÁCH KHUYẾN NGHỊ")
         st.dataframe(
-            df_res.style.applymap(color_highlight, subset=['Khuyến nghị']),
-            use_container_width=True,
-            height=600
+            df_show[['Mã', 'Giá', 'RSI', 'Điểm AI', 'Tín hiệu']].style.background_gradient(subset=['Điểm AI'], cmap='Greens'),
+            use_container_width=True
         )
         
-        # Vẽ biểu đồ so sánh độ tin cậy
-        st.subheader("📊 So sánh độ mạnh dòng tiền")
-        st.bar_chart(df_res.set_index("Mã CK")["Độ tin cậy"])
+        # 3. Soi biểu đồ chi tiết
+        st.divider()
+        st.subheader("🔍 SOI CHART CHI TIẾT")
+        selected_stock = st.selectbox("Chọn mã để xem biểu đồ:", df_show['Mã'].tolist())
+        
+        # Tìm data của mã được chọn để vẽ
+        stock_data = next(item for item in valid_stocks if item["Mã"] == selected_stock)
+        plot_chart(stock_data['Dataframe'], selected_stock)
         
     else:
-        st.warning("Thị trường quá xấu! Không tìm thấy mã nào đủ điều kiện an toàn > 70%.")
+        st.warning(f"Không tìm thấy mã nào > {min_score} điểm. Hãy thử hạ tiêu chuẩn lọc ở thanh bên trái!")
 else:
-    st.info("👈 Vui lòng bấm nút 'KÍCH HOẠT HỆ THỐNG' ở thanh bên trái để bắt đầu quét.")
+    st.info("👈 Bấm nút 'QUÉT THỊ TRƯỜNG NGAY' ở bên trái để bắt đầu.")
