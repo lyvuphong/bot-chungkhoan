@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pandas_ta as ta
-from vnstock import Vnstock # <--- CẬP NHẬT QUAN TRỌNG: Dùng Class mới
+from vnstock import Vnstock  # <--- DÙNG THƯ VIỆN MỚI
 from datetime import datetime, timedelta
 import concurrent.futures
 
@@ -27,30 +27,27 @@ class DataProvider:
             end_date = datetime.now().strftime('%Y-%m-%d')
             start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
             
-            # --- CODE MỚI: Tương thích Vnstock mới nhất ---
+            # --- KHẮC PHỤC LỖI: Dùng cú pháp mới của Vnstock V3 ---
             stock = Vnstock().stock(symbol=symbol, source='VCI')
             df = stock.quote.history(start=start_date, end=end_date, interval='1D')
             
             if df is None or df.empty: return None
             
-            # Chuẩn hóa tên cột (Về dạng chữ thường: open, high, low, close)
+            # Chuẩn hóa tên cột
             df.columns = df.columns.str.lower()
-            
-            # Đảm bảo các cột quan trọng tồn tại
             if 'time' in df.columns: df.rename(columns={'time': 'date'}, inplace=True)
             
-            # Chuyển đổi dữ liệu sang số (tránh lỗi string)
+            # Ép kiểu dữ liệu số
             cols = ['open', 'high', 'low', 'close', 'volume']
             for col in cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
             return df
-        except Exception as e:
-            # print(f"Lỗi tải {symbol}: {e}")
+        except Exception:
             return None
 
-# --- 3. CHIẾN LƯỢC (GIỮ NGUYÊN) ---
+# --- 3. CHIẾN LƯỢC (MA20/50/200) ---
 class StrategyEngine:
     def __init__(self, df):
         self.df = df
@@ -58,15 +55,15 @@ class StrategyEngine:
     def evaluate(self):
         if len(self.df) < 200: return None
         
-        # Chỉ báo
         df = self.df
+        # Chỉ báo kỹ thuật
         df['MA20'] = ta.sma(df['close'], length=20)
         df['MA50'] = ta.sma(df['close'], length=50)
         df['MA200'] = ta.sma(df['close'], length=200)
         df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
         df['Vol_MA20'] = ta.sma(df['volume'], length=20)
         
-        # Tích lũy
+        # Đo độ nén (Tích lũy)
         df['STD_60'] = df['close'].rolling(60).std()
         df['Mean_60'] = df['close'].rolling(60).mean()
         df['Volat_Pct'] = (df['STD_60'] / df['Mean_60']) * 100
@@ -76,18 +73,15 @@ class StrategyEngine:
         
         # Logic Mua
         trend = (curr['close'] > curr['MA20']) and (curr['MA20'] > curr['MA50']) and (curr['MA50'] > curr['MA200'])
-        tight = curr['Volat_Pct'] < 15
+        tight = curr['Volat_Pct'] < 15 # Biến động dưới 15%
         vol_up = curr['volume'] > 1.2 * curr['Vol_MA20']
-        breakout = (curr['close'] > prev['close'])
         
         score = 0
         reasons = []
         if trend: score += 3; reasons.append("Uptrend")
         if tight: score += 2; reasons.append("Nền chặt")
-        if vol_up and breakout: score += 2; reasons.append("Tiền vào")
+        if vol_up: score += 2; reasons.append("Tiền vào")
         
-        # Backtest nhanh (Winrate MA20 cắt MA50)
-        # Giản lược để tăng tốc độ
         return {
             "price": curr['close'],
             "score": score,
@@ -103,11 +97,11 @@ def process_stock(symbol, capital):
     engine = StrategyEngine(df)
     res = engine.evaluate()
     
+    # Lấy mã có điểm >= 5
     if res and res['score'] >= 5:
-        # Quản lý vốn: Rủi ro 1% NAV
         risk_amt = capital * 0.01
-        sl_dist = 2 * res['atr']
-        qty = (risk_amt / sl_dist // 100) * 100 if sl_dist > 0 else 0
+        sl_dist = 2 * res['atr'] if res['atr'] > 0 else 1000
+        qty = (risk_amt / sl_dist // 100) * 100
         
         return {
             "Mã": symbol,
@@ -134,6 +128,7 @@ with st.sidebar:
         results = []
         bar = st.progress(0)
         
+        # Chạy đa luồng (Tăng tốc độ)
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
             futures = {exe.submit(process_stock, s, capital): s for s in symbols}
             for i, f in enumerate(concurrent.futures.as_completed(futures)):
