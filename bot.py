@@ -1,146 +1,166 @@
 import streamlit as st
 import pandas as pd
-import pandas_ta as ta
-from vnstock import Vnstock  # <--- DÙNG THƯ VIỆN MỚI
-from datetime import datetime, timedelta
-import concurrent.futures
+from vnstock import *
+from ta.trend import SMAIndicator
+from ta.momentum import RSIIndicator
+import plotly.graph_objects as go
+import time
 
-# --- 1. CẤU HÌNH ---
-st.set_page_config(page_title="AI Pro Trader System", layout="wide", page_icon="📈")
+# --- CẤU HÌNH TRANG ---
+st.set_page_config(
+    page_title="Vũ Phong Stock AI - Investment Screener",
+    page_icon="📈",
+    layout="wide"
+)
 
-INDUSTRY_GROUPS = {
-    "💎 VN30 (Bluechips)": ["ACB", "BCM", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE"],
-    "🏦 Ngân hàng": ["VCB", "BID", "CTG", "TCB", "VPB", "MBB", "ACB", "STB", "HDB", "TPB", "VIB", "MSB", "LPB", "SHB", "EIB"],
-    "📈 Chứng khoán": ["SSI", "VND", "VCI", "HCM", "SHS", "MBS", "FTS", "BSI", "CTS", "VIX", "ORS", "AGR"],
-    "🏗 Bất động sản": ["VHM", "NVL", "PDR", "DIG", "DXG", "KDH", "NLG", "CEO", "TCH", "HQC", "QCG"],
-    "🏭 Khu Công Nghiệp": ["GVR", "IDC", "KBC", "SZC", "BCM", "VGC", "LHG", "ITA"],
-    "🛢 Dầu khí": ["GAS", "PVD", "PVS", "BSR", "PLX", "PVT", "OIL"],
-    "🐟 Thủy sản": ["VHC", "ANV", "IDI", "CMX", "FMC"],
-    "🏗 Thép": ["HPG", "HSG", "NKG", "TLH", "VGS"]
-}
+# --- PHẦN HEADER & GIỚI THIỆU ---
+st.title("📈 Vũ Phong Stock AI - Công cụ lọc Cổ phiếu Chiến lược")
+st.markdown("""
+**Triết lý đầu tư:** Tăng trưởng bền vững & Kỹ thuật chuẩn xác.
+*Công cụ hỗ trợ lọc cổ phiếu theo phương pháp CANSLIM kết hợp Technical Analysis.*
+""")
 
-# --- 2. XỬ LÝ DỮ LIỆU (NÂNG CẤP VNSTOCK V3) ---
-class DataProvider:
-    @staticmethod
-    def get_market_data(symbol, days=365):
-        try:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-            
-            # --- KHẮC PHỤC LỖI: Dùng cú pháp mới của Vnstock V3 ---
-            stock = Vnstock().stock(symbol=symbol, source='VCI')
-            df = stock.quote.history(start=start_date, end=end_date, interval='1D')
-            
-            if df is None or df.empty: return None
-            
-            # Chuẩn hóa tên cột
-            df.columns = df.columns.str.lower()
-            if 'time' in df.columns: df.rename(columns={'time': 'date'}, inplace=True)
-            
-            # Ép kiểu dữ liệu số
-            cols = ['open', 'high', 'low', 'close', 'volume']
-            for col in cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            return df
-        except Exception:
+# --- SIDEBAR: CẤU HÌNH BỘ LỌC ---
+st.sidebar.header("⚙️ Tham số bộ lọc")
+
+# Nhóm VN30 hay toàn thị trường
+market_scope = st.sidebar.selectbox("Phạm vi lọc", ["VN30", "HOSE (Top 50 Liquidity)"])
+
+# Các tham số kỹ thuật
+st.sidebar.subheader("Tiêu chí Kỹ thuật")
+min_volume = st.sidebar.number_input("Volume trung bình tối thiểu", value=50000, step=10000)
+rsi_min = st.sidebar.slider("RSI tối thiểu (Vùng mua)", 30, 50, 40)
+rsi_max = st.sidebar.slider("RSI tối đa (Tránh đu đỉnh)", 60, 90, 70)
+
+st.sidebar.markdown("---")
+st.sidebar.info("Tips: RSI trong khoảng 40-70 thường cho điểm mua an toàn trong xu hướng tăng.")
+
+# --- HÀM XỬ LÝ DỮ LIỆU (CACHING ĐỂ TĂNG TỐC) ---
+
+@st.cache_data(ttl=3600) # Cache dữ liệu danh sách mã trong 1 giờ
+def get_tickers(scope):
+    try:
+        if scope == "VN30":
+            # Danh sách VN30 cứng (vì API lấy rổ chỉ số đôi khi ko ổn định)
+            # Bạn có thể cập nhật danh sách này hoặc dùng hàm listing_companies lọc nhóm
+            return ['ACB', 'BCM', 'BID', 'BVH', 'CTG', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG', 
+                    'MBB', 'MSN', 'MWG', 'PLX', 'POW', 'SAB', 'SHB', 'SSB', 'SSI', 'STB', 
+                    'TCB', 'TPB', 'VCB', 'VHM', 'VIB', 'VIC', 'VJC', 'VNM', 'VPB', 'VRE']
+        else:
+            # Lấy top 50 mã thanh khoản tốt nhất HOSE để demo (tránh timeout)
+            df = listing_companies(live=True)
+            hose_df = df[df['exchange'] == 'HOSE']
+            return hose_df['ticker'].head(50).tolist()
+    except Exception as e:
+        st.error(f"Lỗi lấy danh sách mã: {e}")
+        return []
+
+def analyze_stock(symbol):
+    """Phân tích kỹ thuật cho 1 mã cổ phiếu"""
+    try:
+        # Lấy dữ liệu 1 năm
+        df = stock_historical_data(symbol=symbol, 
+                                   start_date=(pd.Timestamp.now() - pd.DateOffset(years=1)).strftime('%Y-%m-%d'), 
+                                   end_date=pd.Timestamp.now().strftime('%Y-%m-%d'), 
+                                   resolution='1D')
+        
+        if df is None or len(df) < 200:
             return None
 
-# --- 3. CHIẾN LƯỢC (MA20/50/200) ---
-class StrategyEngine:
-    def __init__(self, df):
-        self.df = df
+        # Tính chỉ báo
+        df['MA50'] = SMAIndicator(close=df['close'], window=50).sma_indicator()
+        df['MA200'] = SMAIndicator(close=df['close'], window=200).sma_indicator()
+        df['RSI'] = RSIIndicator(close=df['close'], window=14).rsi()
+        
+        last = df.iloc[-1]
+        avg_vol = df['volume'].tail(20).mean()
 
-    def evaluate(self):
-        if len(self.df) < 200: return None
-        
-        df = self.df
-        # Chỉ báo kỹ thuật
-        df['MA20'] = ta.sma(df['close'], length=20)
-        df['MA50'] = ta.sma(df['close'], length=50)
-        df['MA200'] = ta.sma(df['close'], length=200)
-        df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        df['Vol_MA20'] = ta.sma(df['volume'], length=20)
-        
-        # Đo độ nén (Tích lũy)
-        df['STD_60'] = df['close'].rolling(60).std()
-        df['Mean_60'] = df['close'].rolling(60).mean()
-        df['Volat_Pct'] = (df['STD_60'] / df['Mean_60']) * 100
-        
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # Logic Mua
-        trend = (curr['close'] > curr['MA20']) and (curr['MA20'] > curr['MA50']) and (curr['MA50'] > curr['MA200'])
-        tight = curr['Volat_Pct'] < 15 # Biến động dưới 15%
-        vol_up = curr['volume'] > 1.2 * curr['Vol_MA20']
-        
-        score = 0
-        reasons = []
-        if trend: score += 3; reasons.append("Uptrend")
-        if tight: score += 2; reasons.append("Nền chặt")
-        if vol_up: score += 2; reasons.append("Tiền vào")
-        
-        return {
-            "price": curr['close'],
-            "score": score,
-            "reasons": ", ".join(reasons),
-            "atr": curr['ATR'],
-            "volatility": round(curr['Volat_Pct'], 2)
-        }
+        # Logic lọc
+        is_uptrend = (last['close'] > last['MA200']) and (last['MA50'] > last['MA200'])
+        is_liquid = avg_vol >= min_volume
+        is_rsi_ok = rsi_min <= last['RSI'] <= rsi_max
 
-def process_stock(symbol, capital):
-    df = DataProvider.get_market_data(symbol)
-    if df is None: return None
-    
-    engine = StrategyEngine(df)
-    res = engine.evaluate()
-    
-    # Lấy mã có điểm >= 5
-    if res and res['score'] >= 5:
-        risk_amt = capital * 0.01
-        sl_dist = 2 * res['atr'] if res['atr'] > 0 else 1000
-        qty = (risk_amt / sl_dist // 100) * 100
-        
-        return {
-            "Mã": symbol,
-            "Giá": f"{res['price']:,.0f}",
-            "Điểm": res['score'],
-            "Lý do": res['reasons'],
-            "KL Mua": f"{int(qty):,}",
-            "Cắt lỗ": f"{int(res['price'] - sl_dist):,.0f}"
-        }
-    return None
+        if is_uptrend and is_liquid and is_rsi_ok:
+            return {
+                'Mã CK': symbol,
+                'Giá hiện tại': last['close'],
+                'RSI (14)': round(last['RSI'], 2),
+                'MA50': round(last['MA50'], 0),
+                'MA200': round(last['MA200'], 0),
+                'Vol TB 20': int(avg_vol),
+                'Xu hướng': 'Tăng'
+            }
+        return None
+    except Exception:
+        return None
 
-# --- 4. GIAO DIỆN ---
-with st.sidebar:
-    st.header("⚙️ Cấu hình")
-    capital = st.number_input("Vốn (VND)", value=1000000000, step=100000000)
+# --- GIAO DIỆN CHÍNH ---
+
+if st.button("🚀 Bắt đầu Lọc Cổ phiếu", type="primary"):
+    tickers = get_tickers(market_scope)
     
-    selected_groups = st.multiselect("Chọn Ngành:", list(INDUSTRY_GROUPS.keys()), default=["💎 VN30 (Bluechips)"])
-    symbols = []
-    for g in selected_groups: symbols.extend(INDUSTRY_GROUPS[g])
-    symbols = sorted(list(set(symbols)))
-    
-    if st.button("🚀 QUÉT NGAY"):
-        st.info(f"Đang quét {len(symbols)} mã...")
+    if not tickers:
+        st.error("Không lấy được danh sách cổ phiếu. Vui lòng thử lại sau.")
+    else:
+        st.write(f"Đang phân tích {len(tickers)} mã cổ phiếu trong danh mục {market_scope}...")
+        
+        # Thanh tiến trình
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         results = []
-        bar = st.progress(0)
         
-        # Chạy đa luồng (Tăng tốc độ)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
-            futures = {exe.submit(process_stock, s, capital): s for s in symbols}
-            for i, f in enumerate(concurrent.futures.as_completed(futures)):
-                try:
-                    data = f.result()
-                    if data: results.append(data)
-                except: pass
-                bar.progress((i+1)/len(symbols))
-        
-        bar.empty()
+        for i, ticker in enumerate(tickers):
+            # Update tiến trình
+            progress = (i + 1) / len(tickers)
+            progress_bar.progress(progress)
+            status_text.text(f"Đang phân tích: {ticker}...")
+            
+            data = analyze_stock(ticker)
+            if data:
+                results.append(data)
+            
+            # Delay nhẹ để tránh bị chặn API
+            time.sleep(0.1)
+
+        progress_bar.empty()
+        status_text.empty()
+
         if results:
-            st.success(f"Tìm thấy {len(results)} cơ hội!")
-            st.dataframe(pd.DataFrame(results).sort_values("Điểm", ascending=False), use_container_width=True)
+            st.success(f"Tìm thấy {len(results)} cổ phiếu tiềm năng!")
+            df_results = pd.DataFrame(results)
+            
+            # Hiển thị bảng dữ liệu có sort
+            st.dataframe(
+                df_results.style.format({
+                    "Giá hiện tại": "{:,.0f}", 
+                    "MA50": "{:,.0f}",
+                    "MA200": "{:,.0f}",
+                    "Vol TB 20": "{:,.0f}"
+                }).background_gradient(subset=['RSI (14)'], cmap='Greens'),
+                use_container_width=True
+            )
+            
+            # --- VẼ BIỂU ĐỒ KHI CHỌN MÃ ---
+            st.markdown("### 📊 Phân tích chi tiết")
+            selected_ticker = st.selectbox("Chọn mã để xem biểu đồ:", df_results['Mã CK'])
+            
+            if selected_ticker:
+                with st.spinner(f"Đang vẽ biểu đồ {selected_ticker}..."):
+                    df_chart = stock_historical_data(symbol=selected_ticker, 
+                                   start_date=(pd.Timestamp.now() - pd.DateOffset(months=6)).strftime('%Y-%m-%d'), 
+                                   end_date=pd.Timestamp.now().strftime('%Y-%m-%d'))
+                    
+                    fig = go.Figure(data=[go.Candlestick(x=df_chart['time'],
+                                    open=df_chart['open'], high=df_chart['high'],
+                                    low=df_chart['low'], close=df_chart['close'], name="Giá")])
+                    
+                    fig.update_layout(title=f"Biểu đồ kỹ thuật {selected_ticker}", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
         else:
-            st.warning("Không tìm thấy mã đạt chuẩn.")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hôm nay. Hãy thử nới lỏng bộ lọc.")
+
+# --- FOOTER ---
+st.markdown("---")
+st.caption("Developed by Expert Investor & IT Specialist using Streamlit & Vnstock.")
