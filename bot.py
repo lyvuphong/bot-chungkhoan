@@ -197,7 +197,7 @@ def plot_chart_pro(data):
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 5. GIAO DIỆN CHÍNH ---
-st.title("🔥 AI STOCK SNIPER PRO (FULL MARKET)")
+st.title("🔥 AI STOCK PRO (FULL MARKET)")
 
 tab1, tab2 = st.tabs(["🔍 TRA CỨU MÃ", "⚡ BỘ LỌC THÔNG MINH"])
 
@@ -293,4 +293,5 @@ with tab2:
                 )
             else:
                 st.warning("Không tìm thấy mã nào đạt điểm yêu cầu.")
+
 
