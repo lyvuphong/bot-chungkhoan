@@ -1,4 +1,4 @@
 streamlit
 pandas
 pandas_ta
-vnstock==0.2.13
+vnstock
