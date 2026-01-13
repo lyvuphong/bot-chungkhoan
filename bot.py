@@ -1,297 +1,166 @@
 import streamlit as st
 import pandas as pd
 import pandas_ta as ta
-import yfinance as yf
+from vnstock import stock_historical_data
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import time
 
 # --- 1. CẤU HÌNH TRANG ---
-st.set_page_config(
-    page_title="AI Stock Pro (Full Market)",
-    layout="wide",
-    page_icon="🔥",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="VN-Stock AI Filter", layout="wide", page_icon="📈")
+st.title("🤖 HỆ THỐNG LỌC CỔ PHIẾU VIỆT NAM (PRO VERSION)")
+st.markdown("---")
 
-# --- CSS TÙY CHỈNH (GIAO DIỆN ĐẸP) ---
-st.markdown("""
-<style>
-    .main {background-color: #f4f6f9;}
-    div[data-testid="stMetric"] {
-        background-color: white; border: 1px solid #ddd; padding: 10px; border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: white; border-radius: 5px; padding: 10px 20px;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background-color: #e3f2fd; color: #1976d2; border: 1px solid #1976d2;
-    }
-    .stButton>button {
-        background-color: #0e1117; color: white; border-radius: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# --- 2. SIDEBAR CẤU HÌNH ---
+st.sidebar.header("⚙️ THAM SỐ LỌC")
 
-# --- 2. KHO DỮ LIỆU CỔ PHIẾU (ĐẦY ĐỦ NHẤT) ---
+# Input mã chứng khoán
+default_tickers = "FPT, HPG, SSI, VND, MBB, TCB, STB, VNM, MWG, DXG, PDR, DIG, VCI"
+input_symbols = st.sidebar.text_area("Danh sách mã (cách nhau dấu phẩy)", default_tickers, height=100)
 
-def get_market_symbols(selected_groups):
-    # 1. CÁC CHỈ SỐ LỚN
-    vn30 = ["ACB", "BCM", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE"]
-    
-    hnx30 = ["CEO", "DTD", "HUT", "IDC", "L14", "L18", "MBS", "PVS", "SHS", "TNG", "VC3", "VGS", "APS", "API", "IDJ", "BVS", "LAS", "PVC", "DDG"]
-    
-    # VN100 = VN30 + 70 Midcap lớn nhất HOSE (Danh sách mô phỏng)
-    vn100_mid = ["DGC", "VHC", "ANV", "KBC", "DIG", "DXG", "PDR", "NLG", "KDH", "VCI", "VND", "HCM", "VIX", "GMD", "REE", "PC1", "GEG", "NT2", "HDG", "PVT", "PTB", "DGW", "FRT", "PET", "HAH", "DPM", "DCM", "CSV", "PAN", "VPI", "SJS", "EIB", "LPB", "MSB", "OCB", "VDS", "ORS", "FTS", "BSI", "CTS", "AGR", "IJC", "HDC", "SZC", "TCH", "KHG", "HHV", "LCG", "VCG", "VGC", "SBT", "HAG", "DBC"]
-    vn100 = list(set(vn30 + vn100_mid))
+# Cấu hình chỉ báo
+st.sidebar.subheader("Thiết lập chỉ báo")
+ma_fast_len = st.sidebar.number_input("Đường xu hướng nhanh (MA Fast)", value=20)
+ma_slow_len = st.sidebar.number_input("Đường xu hướng chậm (MA Slow)", value=50)
+rsi_threshold = st.sidebar.slider("Ngưỡng RSI an toàn (Max)", 50, 90, 70)
 
-    # 2. NHÓM NGÀNH CHI TIẾT
-    groups = {
-        "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "VPB", "MBB", "ACB", "STB", "HDB", "SHB", "SSB", "MSB", "OCB", "TPB", "VIB", "LPB", "EIB", "BAB", "NAB", "BVB", "ABB"],
-        "Chứng khoán": ["SSI", "VND", "VCI", "HCM", "SHS", "MBS", "FTS", "BSI", "CTS", "VIX", "ORS", "AGR", "VDS", "BVS", "APS", "TVS"],
-        "Bất động sản": ["VHM", "VIC", "VRE", "NVL", "PDR", "KDH", "DIG", "CEO", "DXG", "NLG", "HDG", "TCH", "IJC", "HDC", "KHG", "DXS", "CRE", "SCR", "HQC"],
-        "BĐS Công nghiệp": ["KBC", "IDC", "SZC", "GVR", "PHR", "NTC", "SIP", "VGC", "BCM", "ITA", "D2D", "LHG", "TIP"],
-        "Thép": ["HPG", "HSG", "NKG", "VGS", "TLH", "SMC", "TVN", "POM"],
-        "Dầu khí": ["GAS", "PLX", "PVS", "PVD", "BSR", "OIL", "PVT", "PVC", "PVB", "CNG", "ASP"],
-        "Thủy sản": ["VHC", "ANV", "FMC", "MPC", "IDI", "CMX", "ACL"],
-        "Dệt may": ["TNG", "GIL", "MSH", "VGT", "STK", "ADS", "EVE"],
-        # Nhóm đặc biệt: Nhà nước sở hữu >= 70% (Dựa trên dữ liệu sở hữu)
-        "NN nắm >70%": ["GAS", "ACV", "GVR", "BSR", "OIL", "PLX", "VEA", "VGI", "VCB", "BID", "HVN", "DCM", "DPM", "PVM"]
-    }
+# Cấu hình thanh khoản (QUAN TRỌNG)
+st.sidebar.subheader("Bộ lọc thanh khoản")
+min_vol_val = st.sidebar.number_input("GTGD tối thiểu (Tỷ VNĐ/phiên)", value=5.0)
 
-    final_list = []
-    
-    # Logic gộp danh sách
-    if "QUÉT TOÀN BỘ" in selected_groups:
-        # Gộp tất cả các list lại
-        all_stocks = vn100 + hnx30
-        for g in groups.values(): all_stocks += g
-        final_list = all_stocks
-    else:
-        if "VN30" in selected_groups: final_list += vn30
-        if "VN100" in selected_groups: final_list += vn100
-        if "HNX30" in selected_groups: final_list += hnx30
-        
-        # Thêm các nhóm ngành được chọn
-        for group_name, symbols in groups.items():
-            if group_name in selected_groups:
-                final_list += symbols
-
-    # Lọc trùng và thêm đuôi .VN
-    unique_list = list(set(final_list))
-    return [f"{s}.VN" for s in unique_list if len(s) == 3] # Chỉ lấy mã 3 chữ cái hợp lệ
-
-# --- 3. HÀM PHÂN TÍCH (LÕI XỬ LÝ) ---
-
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_stock_data_cached(symbol):
+# --- 3. HÀM XỬ LÝ DỮ LIỆU ---
+@st.cache_data(ttl=3600) # Cache dữ liệu 1 tiếng để tránh spam API
+def get_stock_data(symbol):
+    """Lấy dữ liệu và tính toán chỉ báo"""
     try:
-        if not symbol.endswith(".VN"): symbol += ".VN"
-        ticker = yf.Ticker(symbol)
+        # Tự động lấy ngày hiện tại và lùi về 1 năm trước
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         
-        df = pd.DataFrame()
-        # Retry logic
-        for _ in range(3):
-            try:
-                df = ticker.history(period="1y")
-                if not df.empty: break
-                time.sleep(0.5)
-            except: time.sleep(0.5)
+        df = stock_historical_data(symbol, start_date, end_date, "1D", "stock")
         
-        if df.empty: return None, None, "No Data"
-
-        info = {}
-        try: info = ticker.info
-        except: pass
-
-        return df, info, None
+        if df is None or df.empty or len(df) < ma_slow_len + 5:
+            return None
+            
+        # Chuẩn hóa tên cột (đề phòng vnstock trả về tên khác)
+        df.columns = df.columns.str.lower() # chuyển hết về chữ thường
+        
+        # Tính toán chỉ báo
+        df['ma_fast'] = ta.sma(df['close'], length=ma_fast_len)
+        df['ma_slow'] = ta.sma(df['close'], length=ma_slow_len)
+        df['rsi'] = ta.rsi(df['close'], length=14)
+        
+        # Tính giá trị giao dịch trung bình 20 phiên (Tỷ đồng)
+        df['avg_val_20'] = (df['close'] * df['volume']).rolling(20).mean() / 1_000_000_000
+        
+        return df
     except Exception as e:
-        return None, None, str(e)
+        # st.error(f"Lỗi tải {symbol}: {e}") # Bỏ comment nếu muốn debug
+        return None
 
-def calculate_trade_plan(df, current_price):
-    support_level = df['Low'].tail(20).min()
-    risk_pct = (current_price - support_level) / current_price
+def check_signal(df, symbol):
+    """Kiểm tra điều kiện Mua"""
+    if df is None: return None
     
-    # Stoploss logic
-    stop_loss = current_price * 0.93 if risk_pct > 0.07 else support_level
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
     
-    # Take Profit (R:R = 1:2)
-    risk_amt = current_price - stop_loss
-    if risk_amt <= 0: risk_amt = current_price * 0.05
-    take_profit = current_price + (risk_amt * 2)
-    
-    return int(stop_loss), int(take_profit)
+    # 1. Điều kiện thanh khoản (Tránh cổ phiếu rác)
+    if curr['avg_val_20'] < min_vol_val:
+        return None
 
-def analyze_single_stock(symbol):
-    df_raw, info, err = fetch_stock_data_cached(symbol)
-    if err: return None, err
+    # 2. Xu hướng tăng: Giá > MA Fast > MA Slow
+    trend_up = (curr['close'] > curr['ma_fast']) and (curr['ma_fast'] > curr['ma_slow'])
     
-    try:
-        df = df_raw.copy()
-        
-        # Chỉ báo kỹ thuật
-        df['SMA_20'] = ta.sma(df['Close'], length=20)
-        df['SMA_50'] = ta.sma(df['Close'], length=50)
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        
-        latest = df.iloc[-1]
-        
-        # Chấm điểm
-        score = 0
-        reasons = []
-        
-        # Technical
-        if latest['Close'] > latest['SMA_20']: score += 20; reasons.append("Giá > MA20")
-        if latest['SMA_20'] > latest['SMA_50']: score += 20; reasons.append("Trend Tăng")
-        if 50 <= latest['RSI'] <= 70: score += 10; reasons.append("RSI Mạnh")
-        if latest['Volume'] > df['Volume'].tail(20).mean(): score += 20; reasons.append("Tiền vào")
-        
-        # Fundamental (P/E)
-        pe = info.get('trailingPE', 0) if info else 0
-        if pe and 5 < pe < 20: score += 15; reasons.append("P/E Tốt")
-        
-        # Trade Plan
-        sl, tp = calculate_trade_plan(df, latest['Close'])
-        
-        # Khuyến nghị
-        rec = "THEO DÕI"
-        if score >= 80: rec = "MUA MẠNH"
-        elif score >= 60: rec = "MUA"
-        elif score < 40: rec = "BÁN"
-
+    # 3. Điểm mua:
+    # Cách 1: Giá vừa cắt lên MA Fast
+    cross_up = (prev['close'] < prev['ma_fast']) and (curr['close'] > curr['ma_fast'])
+    # Cách 2: Giá test lại MA Fast và bật lên (Pullback)
+    pullback = (curr['low'] <= curr['ma_fast'] * 1.02) and (curr['close'] > curr['ma_fast'])
+    
+    buy_signal = trend_up and (cross_up or pullback)
+    
+    # 4. RSI không quá nóng
+    safe_rsi = curr['rsi'] < rsi_threshold
+    
+    if buy_signal and safe_rsi:
         return {
-            "Symbol": symbol.replace(".VN", ""),
-            "Price": latest['Close'],
-            "Score": score,
-            "Rec": rec,
-            "SL": sl,
-            "TP": tp,
-            "PE": round(pe, 1) if pe else 0,
-            "Reasons": ", ".join(reasons),
-            "DF": df
-        }, None
-    except Exception as e:
-        return None, str(e)
+            "Mã CK": symbol,
+            "Giá": curr['close'],
+            f"MA{ma_fast_len}": round(curr['ma_fast'], 0),
+            "RSI": round(curr['rsi'], 1),
+            "GTGD TB (Tỷ)": round(curr['avg_val_20'], 2),
+            "Khuyến nghị": "MUA 🟢"
+        }
+    return None
 
-# --- 4. VẼ BIỂU ĐỒ ---
-def plot_chart_pro(data):
-    df = data['DF']
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
-
-    # Nến
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'), row=1, col=1)
-    if 'SMA_20' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+# --- 4. HÀM VẼ BIỂU ĐỒ ---
+def plot_chart(df, symbol):
+    """Vẽ biểu đồ nến + MA"""
+    # Lấy 100 nến gần nhất để vẽ cho rõ
+    plot_df = df.tail(100)
     
-    # Plan Lines
-    fig.add_hline(y=data['Price'], line_dash="dot", line_color="gray", annotation_text="ENTRY", row=1, col=1)
-    fig.add_hline(y=data['SL'], line_dash="dash", line_color="red", annotation_text=f"SL: {data['SL']:,}", row=1, col=1)
-    fig.add_hline(y=data['TP'], line_dash="dash", line_color="#00CC96", annotation_text=f"TP: {data['TP']:,}", row=1, col=1)
-
-    # Vol
-    colors = ['red' if row['Open'] > row['Close'] else 'green' for i, row in df.iterrows()]
-    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Vol'), row=2, col=1)
-
-    fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white", title=f"Chart: {data['Symbol']}")
+    fig = go.Figure()
+    
+    # Nến
+    fig.add_trace(go.Candlestick(x=plot_df.index,
+                    open=plot_df['open'], high=plot_df['high'],
+                    low=plot_df['low'], close=plot_df['close'],
+                    name='Giá'))
+    
+    # Đường MA
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['ma_fast'], 
+                             line=dict(color='orange', width=1.5), name=f'MA{ma_fast_len}'))
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['ma_slow'], 
+                             line=dict(color='blue', width=1.5), name=f'MA{ma_slow_len}'))
+    
+    fig.update_layout(title=f"Biểu đồ kỹ thuật {symbol}", 
+                      xaxis_rangeslider_visible=False,
+                      template="plotly_dark", height=500)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 5. GIAO DIỆN CHÍNH ---
-st.title("🔥 AI STOCK PRO (FULL MARKET)")
-
-tab1, tab2 = st.tabs(["🔍 TRA CỨU MÃ", "⚡ BỘ LỌC THÔNG MINH"])
-
-# === TAB 1: TRA CỨU ===
-with tab1:
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        txt_symbol = st.text_input("Nhập mã (VD: GVR, IDC, PVS...):", "").upper()
-    with col2:
-        st.write("")
-        st.write("")
-        btn_check = st.button("PHÂN TÍCH NGAY", type="primary", use_container_width=True)
-
-    if btn_check and txt_symbol:
-        with st.spinner(f"Đang phân tích {txt_symbol}..."):
-            d, e = analyze_single_stock(txt_symbol)
-            if d:
-                # Scorecard
-                sc = d['Score']
-                clr = "green" if sc >= 80 else "orange" if sc >= 60 else "red"
-                
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Giá", f"{int(d['Price']):,} đ")
-                c2.metric("Điểm AI", f"{sc}/100")
-                c3.metric("P/E", d['PE'])
-                c4.markdown(f"<h3 style='color:{clr}; text-align:center; border:1px solid {clr}; border-radius:5px'>{d['Rec']}</h3>", unsafe_allow_html=True)
-                
-                st.markdown("---")
-                # Plan info
-                cp1, cp2, cp3 = st.columns(3)
-                cp1.success(f"🎯 TARGET: {d['TP']:,}")
-                cp2.info(f"🔵 ENTRY: {int(d['Price']):,}")
-                cp3.error(f"🛑 STOPLOSS: {d['SL']:,}")
-                st.caption(f"Lý do: {d['Reasons']}")
-                
-                plot_chart_pro(d)
-            elif e:
-                st.error(f"Lỗi: {e}")
-
-# === TAB 2: BỘ LỌC ===
-with tab2:
-    st.markdown("### ⚙️ Cấu Hình Quét")
+# --- 5. LOGIC CHẠY CHÍNH ---
+if st.sidebar.button("QUÉT TÍN HIỆU NGAY 🔥", type="primary"):
+    symbols_list = [x.strip().upper() for x in input_symbols.split(',') if x.strip()]
     
-    # DANH MỤC LỰA CHỌN MỚI
-    all_sectors = [
-        "QUÉT TOÀN BỘ", "VN30", "VN100", "HNX30",
-        "Ngân hàng", "Chứng khoán", "Bất động sản", "BĐS Công nghiệp",
-        "Thép", "Dầu khí", "Thủy sản", "Dệt may", 
-        "NN nắm >70%"
-    ]
+    results = []
+    valid_dfs = {} # Lưu lại data để vẽ biểu đồ sau này
     
-    c_sel, c_sli = st.columns([2, 1])
-    with c_sel:
-        chosen_sectors = st.multiselect("Chọn nhóm ngành/Chỉ số:", all_sectors, default=["VN30", "Ngân hàng"])
-    with c_sli:
-        min_point = st.slider("Điểm tối thiểu:", 0, 100, 60)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, sym in enumerate(symbols_list):
+        status_text.text(f"Đang phân tích: {sym}...")
+        df = get_stock_data(sym)
         
-    if st.button("🚀 BẮT ĐẦU QUÉT", type="primary"):
-        # Lấy danh sách mã theo lựa chọn
-        symbols = get_market_symbols(chosen_sectors)
+        if df is not None:
+            sig = check_signal(df, sym)
+            if sig:
+                results.append(sig)
+                valid_dfs[sym] = df
         
-        if not symbols:
-            st.warning("Vui lòng chọn ít nhất một nhóm ngành.")
-        else:
-            st.toast(f"Đang quét {len(symbols)} mã...", icon="⏳")
-            
-            res_list = []
-            bar = st.progress(0)
-            status = st.empty()
-            
-            for i, s in enumerate(symbols):
-                status.caption(f"Đang xử lý: {s} ({i+1}/{len(symbols)})")
-                d, e = analyze_single_stock(s)
-                if d and d['Score'] >= min_point:
-                    res_list.append(d)
-                bar.progress((i+1)/len(symbols))
-            
-            status.empty()
-            
-            if res_list:
-                df_r = pd.DataFrame(res_list).sort_values(by="Score", ascending=False)
-                st.success(f"Tìm thấy {len(df_r)} cơ hội đầu tư!")
+        progress_bar.progress((i + 1) / len(symbols_list))
+        
+    progress_bar.empty()
+    status_text.empty()
+    
+    # HIỂN THỊ KẾT QUẢ
+    if results:
+        st.success(f"🎉 Tìm thấy {len(results)} mã cổ phiếu tiềm năng!")
+        
+        # 1. Hiển thị bảng tổng hợp
+        df_res = pd.DataFrame(results)
+        st.dataframe(df_res.style.highlight_max(axis=0, color='green'), use_container_width=True)
+        
+        st.markdown("### 📊 Chi tiết biểu đồ")
+        # 2. Tabs cho từng mã để xem biểu đồ
+        tabs = st.tabs([x['Mã CK'] for x in results])
+        for i, tab in enumerate(tabs):
+            symbol = results[i]['Mã CK']
+            with tab:
+                st.write(f"Phân tích kỹ thuật mã **{symbol}**")
+                plot_chart(valid_dfs[symbol], symbol)
                 
-                st.dataframe(
-                    df_r[['Symbol', 'Price', 'Score', 'Rec', 'SL', 'TP', 'PE', 'Reasons']],
-                    use_container_width=True,
-                    column_config={
-                        "Score": st.column_config.ProgressColumn("Điểm", max_value=100),
-                        "Price": st.column_config.NumberColumn("Giá", format="%d"),
-                        "SL": st.column_config.NumberColumn("Cắt Lỗ", format="%d"),
-                        "TP": st.column_config.NumberColumn("Chốt Lời", format="%d"),
-                    }
-                )
-            else:
-                st.warning("Không tìm thấy mã nào đạt điểm yêu cầu.")
-
-
+    else:
+        st.warning("Không tìm thấy mã nào thỏa mãn tiêu chí lọc hôm nay. Hãy thử nới lỏng điều kiện RSI hoặc MA.")
+else:
+    st.info("👈 Nhập danh sách mã bên trái và bấm nút Quét để bắt đầu.")
