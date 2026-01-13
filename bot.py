@@ -7,7 +7,8 @@ from ta.volatility import BollingerBands
 import plotly.graph_objects as go
 from datetime import datetime
 import random
-
+# ... các import cũ ...
+from vnstock import stock_overview, stock_evaluation, quote_instant
 # --- CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Vũ Phong Pro Trader", page_icon="💎", layout="wide")
 
@@ -86,116 +87,120 @@ def analyze_ticker(ticker, df_ticker):
 
 def get_fundamental_analysis(ticker):
     """
-    Phân tích cơ bản (Updated: Xử lý ngoại lệ khi thiếu dữ liệu Yahoo)
+    Phân tích cơ bản chuyên sâu (Sử dụng VNSTOCK - Dữ liệu chuẩn xác từ TCBS/SSI)
     """
     try:
-        stock = yf.Ticker(f"{ticker}.VN")
+        symbol = ticker.upper()
         
-        # Thử lấy info, nếu lỗi connection thì return None
+        # --- BƯỚC 1: LẤY DỮ LIỆU TỪ VNSTOCK ---
+        # 1. Lấy thông tin tổng quan (Vốn hóa, ngành...)
         try:
-            info = stock.info
-        except Exception:
-            return None
+            df_overview = stock_overview(symbol=symbol)
+            if df_overview is None or df_overview.empty: return None
+            overview = df_overview.iloc[0]
+        except: return None # Không tìm thấy mã
 
-        # 1. Trích xuất dữ liệu an toàn (Safe Get)
-        # Lưu ý: Yahoo trả về None nếu không có dữ liệu, ta convert về 0 hoặc giá trị mặc định để tính toán không lỗi
-        market_cap = info.get('marketCap') or 0
-        pe = info.get('trailingPE')
-        pb = info.get('priceToBook')
-        roe = info.get('returnOnEquity')
-        debt_to_equity = info.get('debtToEquity') 
-        dividend_yield = info.get('dividendYield')
-        beta = info.get('beta')
-        current_price = info.get('currentPrice') or info.get('previousClose') or 0
+        # 2. Lấy chỉ số định giá (P/E, P/B, ROE...)
+        try:
+            df_eval = stock_evaluation(symbol=symbol, period=1, lang='vi')
+            if df_eval is None or df_eval.empty:
+                # Fallback nếu mã mới lên sàn chưa có đánh giá
+                evaluation_data = {}
+            else:
+                evaluation_data = df_eval.iloc[0]
+        except: evaluation_data = {}
+
+        # 3. Lấy giá hiện tại (Real-time)
+        try:
+            df_price = quote_instant(symbol=symbol)
+            current_price = df_price['price'].iloc[0] * 1000 # VNStock trả về nghìn đồng
+        except: 
+            current_price = 0
+
+        # --- BƯỚC 2: CHUẨN HÓA DỮ LIỆU ---
+        # Lưu ý: VNStock trả về 'exchange', 'industry', 'marketCap' (tỷ đồng)
         
-        # Nếu không lấy được giá, coi như lỗi
-        if current_price == 0: return None
-
-        # 2. Logic Tính Điểm (Linh hoạt hơn)
+        market_cap_ty_dong = overview.get('marketCap', 0) 
+        market_cap = market_cap_ty_dong * 1_000_000_000 # Đổi về VND để thống nhất logic
+        
+        # Chỉ số tài chính (Handle missing keys an toàn)
+        pe = evaluation_data.get('PE', 0)
+        pb = evaluation_data.get('PB', 0)
+        roe = evaluation_data.get('ROE', 0) # VNStock thường trả về %, ví dụ 0.15 hoặc 15
+        
+        # Chuẩn hóa ROE về dạng thập phân (0.15) nếu nó đang là số nguyên (15)
+        if roe > 1: roe = roe / 100
+        
+        # Cổ tức: VNStock không trả trực tiếp Yield trong hàm eval, ta ước lượng hoặc bỏ qua tạm thời
+        # Để đơn giản, ta dùng P/B và P/E để chấm điểm chính
+        
+        # --- BƯỚC 3: LOGIC TÍNH ĐIỂM (COMPOUNDER GUARDIAN) ---
         score = 0
         details = []
         
-        # Tiêu chí 1: Vị thế (Market Cap)
-        if market_cap > 10000_000_000_000:
+        # 1. Vị thế & Quy mô (Market Cap)
+        if market_cap_ty_dong > 10_000: # > 10k tỷ
             score += 2
-            details.append("✅ Doanh nghiệp quy mô Lớn (Bluechip).")
-        elif market_cap > 3000_000_000_000:
-            score += 1
-            details.append("✅ Doanh nghiệp quy mô Vừa (Midcap).")
+            details.append(f"✅ Vốn hóa: {market_cap_ty_dong:,.0f} tỷ - Bluechip đầu ngành.")
+        elif market_cap_ty_dong > 3_000:
+            score += 1.5
+            details.append(f"✅ Vốn hóa: {market_cap_ty_dong:,.0f} tỷ - Midcap quy mô tốt.")
         else:
-            details.append("⚠️ Quy mô nhỏ hoặc thiếu dữ liệu vốn hóa.")
+            score += 0.5
+            details.append(f"⚠️ Vốn hóa: {market_cap_ty_dong:,.0f} tỷ - Penny/Smallcap (Biến động cao).")
 
-        # Tiêu chí 2: Hiệu quả (ROE) - Xử lý khi ROE = None
-        if roe is not None:
-            if roe > 0.15: 
-                score += 2
-                details.append(f"✅ ROE = {roe*100:.1f}%: Hiệu quả vốn rất tốt.")
-            elif roe > 0.10:
-                score += 1
-                details.append(f"⚖️ ROE = {roe*100:.1f}%: Hiệu quả mức khá.")
-            else:
-                details.append(f"⚠️ ROE = {roe*100:.1f}%: Hiệu quả thấp.")
+        # 2. Hiệu quả sử dụng vốn (ROE)
+        if roe > 0.15: 
+            score += 2.5
+            details.append(f"✅ ROE = {roe*100:.1f}%: Doanh nghiệp tạo lãi xuất sắc (>15%).")
+        elif roe > 0.10:
+            score += 1.5
+            details.append(f"⚖️ ROE = {roe*100:.1f}%: Hiệu quả sinh lời ổn định.")
         else:
-            details.append("⚪ Thiếu dữ liệu ROE (Bỏ qua tiêu chí này).")
+            details.append(f"⚠️ ROE = {roe*100:.1f}%: Hiệu quả sử dụng vốn thấp.")
 
-        # Tiêu chí 3: Định giá (P/E) - Xử lý khi PE = None
-        if pe is not None:
-            if 0 < pe < 12:
-                score += 2
-                details.append(f"✅ P/E = {pe:.1f}: Định giá RẺ.")
-            elif 12 <= pe < 20:
-                score += 1
+        # 3. Định giá (P/E)
+        if pe > 0:
+            if pe < 10:
+                score += 2.5
+                details.append(f"✅ P/E = {pe:.1f}: Định giá RẤT RẺ (Vùng mua giá trị).")
+            elif 10 <= pe < 18:
+                score += 1.5
                 details.append(f"⚖️ P/E = {pe:.1f}: Định giá HỢP LÝ.")
             else:
-                details.append(f"⚠️ P/E = {pe:.1f}: Định giá CAO.")
-        else:
-            details.append("⚪ Thiếu dữ liệu P/E (Có thể do lỗ hoặc thiếu data).")
-
-        # Tiêu chí 4: Cổ tức
-        if dividend_yield is not None and dividend_yield > 0.03:
-            score += 1.5
-            details.append(f"✅ Cổ tức Yield = {dividend_yield*100:.1f}%: Tốt.")
-        elif dividend_yield is not None and dividend_yield > 0:
-            score += 0.5
-            details.append("⚖️ Có trả cổ tức tiền mặt.")
-        
-        # Tiêu chí 5: Nợ vay (Debt)
-        if debt_to_equity is not None:
-            if debt_to_equity < 100: # < 1.0
-                score += 1.5
-                details.append(f"✅ Nợ/VCSH = {debt_to_equity/100:.2f}: Tài chính an toàn.")
-            elif debt_to_equity < 200:
                 score += 0.5
-                details.append(f"⚖️ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy trung bình.")
-            else:
-                score -= 1
-                details.append(f"❌ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy cao.")
+                details.append(f"⚠️ P/E = {pe:.1f}: Định giá CAO (Phản ánh kỳ vọng lớn).")
         else:
-             details.append("⚪ Thiếu dữ liệu Nợ vay.")
+            details.append("⚠️ P/E Âm: Doanh nghiệp đang thua lỗ.")
+
+        # 4. Giá trị sổ sách (P/B) - Tiêu chí phụ cho tích sản
+        if pb > 0 and pb < 1.5:
+             score += 1
+             details.append(f"✅ P/B = {pb:.1f}: Giá cổ phiếu sát giá trị sổ sách (An toàn).")
         
-        # Chuẩn hóa điểm số (Max 10)
-        # Nếu thiếu quá nhiều dữ liệu, điểm sẽ thấp, cảnh báo người dùng
-        final_score = min(score + 1, 10)
+        # --- BƯỚC 4: TỔNG HỢP ---
+        # Thang điểm tối đa khoảng 8-9 (dành chỗ cho yếu tố con người/tin tức)
+        final_score = min(score + 1, 10) # +1 điểm khuyến khích cơ bản
         
         evaluation = ""
-        if final_score >= 8: evaluation = "💎 CƠ HỘI VÀNG (Excellent)"
-        elif final_score >= 6: evaluation = "⚖️ KHẢ QUAN (Good)"
-        else: evaluation = "⚠️ CẨN TRỌNG / THIẾU DỮ LIỆU"
+        if final_score >= 8: evaluation = "💎 CƠ HỘI VÀNG (Excellent Case)"
+        elif final_score >= 6: evaluation = "⚖️ TRẠNG THÁI TỐT (Investable)"
+        else: evaluation = "⚠️ CẦN CÂN NHẮC KỸ (High Risk)"
 
         return {
-            'symbol': ticker,
-            'name': info.get('longName', ticker),
+            'symbol': symbol,
+            'name': overview.get('shortName', symbol), # Lấy tên cty
             'price': current_price,
             'score': round(final_score, 1),
             'evaluation': evaluation,
             'details': details,
             'metrics': {
-                'P/E': pe, 'P/B': pb, 'ROE': roe, 'Div Yield': dividend_yield
+                'P/E': pe, 'P/B': pb, 'ROE': roe, 'Div Yield': 0 # VNStock basic chưa có yield, để 0
             }
         }
 
     except Exception as e:
-        print(f"Error analyzing {ticker}: {e}") # Debug log for dev
+        print(f"VNStock Error [{ticker}]: {e}")
         return None
 # --- GIAO DIỆN CHÍNH ---
 
@@ -336,4 +341,5 @@ with tab3:
 
 st.markdown("---")
 st.caption("Developed by Expert Investor. Data Source: Yahoo Finance. Disclaimer: For educational purposes only.")
+
 
