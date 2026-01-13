@@ -2,6 +2,7 @@ streamlit
 pandas
 numpy
 pandas_ta
+vnstock
 yfinance
 plotly
 ccxt
@@ -10,4 +11,3 @@ scikit-learn
 python-dotenv
 schedule
 openpyxl
-vnstock
