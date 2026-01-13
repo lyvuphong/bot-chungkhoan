@@ -86,92 +86,101 @@ def analyze_ticker(ticker, df_ticker):
 
 def get_fundamental_analysis(ticker):
     """
-    Phân tích cơ bản chuyên sâu (Compounder Guardian Logic)
-    Lưu ý: Dữ liệu Yahoo Finance cho VN có thể bị thiếu, cần xử lý ngoại lệ kỹ.
+    Phân tích cơ bản (Updated: Xử lý ngoại lệ khi thiếu dữ liệu Yahoo)
     """
     try:
         stock = yf.Ticker(f"{ticker}.VN")
-        info = stock.info
         
-        # 1. Trích xuất dữ liệu (Xử lý None nếu không có data)
-        market_cap = info.get('marketCap', 0)
-        pe = info.get('trailingPE', None)
-        pb = info.get('priceToBook', None)
-        roe = info.get('returnOnEquity', None) # Dạng số thập phân (0.15 = 15%)
-        debt_to_equity = info.get('debtToEquity', None) # Dạng % (ví dụ 45.5) hoặc số
-        dividend_yield = info.get('dividendYield', 0)
-        beta = info.get('beta', 1)
-        current_price = info.get('currentPrice', 0)
+        # Thử lấy info, nếu lỗi connection thì return None
+        try:
+            info = stock.info
+        except Exception:
+            return None
+
+        # 1. Trích xuất dữ liệu an toàn (Safe Get)
+        # Lưu ý: Yahoo trả về None nếu không có dữ liệu, ta convert về 0 hoặc giá trị mặc định để tính toán không lỗi
+        market_cap = info.get('marketCap') or 0
+        pe = info.get('trailingPE')
+        pb = info.get('priceToBook')
+        roe = info.get('returnOnEquity')
+        debt_to_equity = info.get('debtToEquity') 
+        dividend_yield = info.get('dividendYield')
+        beta = info.get('beta')
+        current_price = info.get('currentPrice') or info.get('previousClose') or 0
         
-        # 2. Logic Tính Điểm (Scoring System / 10)
+        # Nếu không lấy được giá, coi như lỗi
+        if current_price == 0: return None
+
+        # 2. Logic Tính Điểm (Linh hoạt hơn)
         score = 0
         details = []
         
-        # Tiêu chí 1: Vị thế & Quy mô (MOAT sơ bộ)
-        if market_cap > 10000_000_000_000: # > 10k tỷ
+        # Tiêu chí 1: Vị thế (Market Cap)
+        if market_cap > 10000_000_000_000:
             score += 2
-            details.append("✅ Doanh nghiệp quy mô lớn (Bluechip/Đầu ngành).")
+            details.append("✅ Doanh nghiệp quy mô Lớn (Bluechip).")
         elif market_cap > 3000_000_000_000:
             score += 1
-            details.append("✅ Doanh nghiệp quy mô vừa (Midcap).")
+            details.append("✅ Doanh nghiệp quy mô Vừa (Midcap).")
         else:
-            details.append("⚠️ Quy mô nhỏ, rủi ro biến động cao.")
+            details.append("⚠️ Quy mô nhỏ hoặc thiếu dữ liệu vốn hóa.")
 
-        # Tiêu chí 2: Hiệu quả sử dụng vốn (ROE)
-        if roe:
+        # Tiêu chí 2: Hiệu quả (ROE) - Xử lý khi ROE = None
+        if roe is not None:
             if roe > 0.15: 
                 score += 2
-                details.append(f"✅ ROE = {roe*100:.1f}%: Hiệu quả sử dụng vốn rất tốt (>15%).")
+                details.append(f"✅ ROE = {roe*100:.1f}%: Hiệu quả vốn rất tốt.")
             elif roe > 0.10:
                 score += 1
-                details.append(f"⚖️ ROE = {roe*100:.1f}%: Hiệu quả ở mức trung bình khá.")
+                details.append(f"⚖️ ROE = {roe*100:.1f}%: Hiệu quả mức khá.")
             else:
-                details.append(f"⚠️ ROE = {roe*100:.1f}%: Hiệu quả sử dụng vốn thấp.")
+                details.append(f"⚠️ ROE = {roe*100:.1f}%: Hiệu quả thấp.")
         else:
-            details.append("⚠️ Không có dữ liệu ROE.")
+            details.append("⚪ Thiếu dữ liệu ROE (Bỏ qua tiêu chí này).")
 
-        # Tiêu chí 3: Định giá (P/E)
-        if pe:
+        # Tiêu chí 3: Định giá (P/E) - Xử lý khi PE = None
+        if pe is not None:
             if 0 < pe < 12:
                 score += 2
-                details.append(f"✅ P/E = {pe:.1f}: Định giá RẺ so với trung bình thị trường.")
+                details.append(f"✅ P/E = {pe:.1f}: Định giá RẺ.")
             elif 12 <= pe < 20:
                 score += 1
                 details.append(f"⚖️ P/E = {pe:.1f}: Định giá HỢP LÝ.")
             else:
-                details.append(f"⚠️ P/E = {pe:.1f}: Định giá CAO hoặc phản ánh kỳ vọng tăng trưởng nóng.")
+                details.append(f"⚠️ P/E = {pe:.1f}: Định giá CAO.")
         else:
-            details.append("⚠️ P/E âm hoặc không có dữ liệu (Cẩn trọng lỗ lũy kế).")
+            details.append("⚪ Thiếu dữ liệu P/E (Có thể do lỗ hoặc thiếu data).")
 
-        # Tiêu chí 4: Cổ tức (Dòng tiền cho Tích sản)
-        if dividend_yield and dividend_yield > 0.03:
+        # Tiêu chí 4: Cổ tức
+        if dividend_yield is not None and dividend_yield > 0.03:
             score += 1.5
-            details.append(f"✅ Cổ tức = {dividend_yield*100:.1f}%: Có dòng tiền trả lại cổ đông tốt.")
-        elif dividend_yield and dividend_yield > 0:
+            details.append(f"✅ Cổ tức Yield = {dividend_yield*100:.1f}%: Tốt.")
+        elif dividend_yield is not None and dividend_yield > 0:
             score += 0.5
             details.append("⚖️ Có trả cổ tức tiền mặt.")
         
-        # Tiêu chí 5: Rủi ro Tài chính (Debt/Equity)
-        # Yahoo trả DebtToEquity dạng số (ví dụ 80 nghĩa là 80% tức 0.8)
-        if debt_to_equity:
+        # Tiêu chí 5: Nợ vay (Debt)
+        if debt_to_equity is not None:
             if debt_to_equity < 100: # < 1.0
                 score += 1.5
-                details.append(f"✅ Nợ/VCSH = {debt_to_equity/100:.2f}: Cơ cấu tài chính AN TOÀN.")
+                details.append(f"✅ Nợ/VCSH = {debt_to_equity/100:.2f}: Tài chính an toàn.")
             elif debt_to_equity < 200:
                 score += 0.5
-                details.append(f"⚖️ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy mức trung bình.")
+                details.append(f"⚖️ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy trung bình.")
             else:
                 score -= 1
-                details.append(f"❌ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy CAO, rủi ro khi lãi suất tăng.")
+                details.append(f"❌ Nợ/VCSH = {debt_to_equity/100:.2f}: Đòn bẩy cao.")
+        else:
+             details.append("⚪ Thiếu dữ liệu Nợ vay.")
         
         # Chuẩn hóa điểm số (Max 10)
-        final_score = min(score + 1, 10) # Base 1 điểm khuyến khích
+        # Nếu thiếu quá nhiều dữ liệu, điểm sẽ thấp, cảnh báo người dùng
+        final_score = min(score + 1, 10)
         
-        # Phân loại
         evaluation = ""
         if final_score >= 8: evaluation = "💎 CƠ HỘI VÀNG (Excellent)"
         elif final_score >= 6: evaluation = "⚖️ KHẢ QUAN (Good)"
-        else: evaluation = "⚠️ CẨN TRỌNG (Watch Out)"
+        else: evaluation = "⚠️ CẨN TRỌNG / THIẾU DỮ LIỆU"
 
         return {
             'symbol': ticker,
@@ -186,8 +195,8 @@ def get_fundamental_analysis(ticker):
         }
 
     except Exception as e:
+        print(f"Error analyzing {ticker}: {e}") # Debug log for dev
         return None
-
 # --- GIAO DIỆN CHÍNH ---
 
 st.title("💎 Vũ Phong Pro Trader - Hệ thống Đầu tư Thông minh")
@@ -327,3 +336,4 @@ with tab3:
 
 st.markdown("---")
 st.caption("Developed by Expert Investor. Data Source: Yahoo Finance. Disclaimer: For educational purposes only.")
+
