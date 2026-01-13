@@ -8,7 +8,7 @@ import time
 
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(
-    page_title="AI Stock Sniper Pro",
+    page_title="AI Stock Sniper Pro (VN100)",
     layout="wide",
     page_icon="🎯",
     initial_sidebar_state="expanded"
@@ -44,7 +44,7 @@ def fetch_stock_data_cached(symbol):
         # Thử lại 3 lần nếu mạng lỗi
         for _ in range(3):
             try:
-                df = ticker.history(period="1y") # Lấy 1 năm để tính chỉ báo
+                df = ticker.history(period="1y") # Lấy 1 năm
                 if not df.empty: break
                 time.sleep(1)
             except: time.sleep(1)
@@ -74,9 +74,9 @@ def calculate_trade_plan(df, current_price):
     else:
         stop_loss = support_level
         
-    # 4. Logic Take Profit: Tỷ lệ R:R = 1:2 (Lãi gấp đôi Lỗ)
+    # 4. Logic Take Profit: Tỷ lệ R:R = 1:2
     risk_amt = current_price - stop_loss
-    if risk_amt <= 0: risk_amt = current_price * 0.05 # Fallback nếu lỗi
+    if risk_amt <= 0: risk_amt = current_price * 0.05
     take_profit = current_price + (risk_amt * 2)
     
     return int(stop_loss), int(take_profit)
@@ -140,7 +140,7 @@ def plot_trade_chart(data):
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'), row=1, col=1)
     if 'SMA_20' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
     
-    # CÁC ĐƯỜNG KẺ PLAN (Quan trọng)
+    # CÁC ĐƯỜNG KẺ PLAN
     fig.add_hline(y=data['Price'], line_dash="dot", line_color="gray", annotation_text="ENTRY", row=1, col=1)
     fig.add_hline(y=data['SL'], line_dash="dash", line_color="red", annotation_text=f"STOP: {data['SL']:,}", row=1, col=1)
     fig.add_hline(y=data['TP'], line_dash="dash", line_color="#00CC96", annotation_text=f"TARGET: {data['TP']:,}", row=1, col=1)
@@ -153,7 +153,7 @@ def plot_trade_chart(data):
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 4. GIAO DIỆN CHÍNH ---
-st.title("🎯 AI STOCK SNIPER PRO")
+st.title("🎯 AI STOCK SNIPER PRO (VN100)")
 
 tab1, tab2 = st.tabs(["🔍 TRA CỨU & PLAN", "⚡ BỘ LỌC THỊ TRƯỜNG"])
 
@@ -181,7 +181,7 @@ with tab1:
                 c3.metric("P/E", data['PE'])
                 c4.markdown(f"<div style='text-align:center; color:{color}; font-weight:bold; font-size:20px; padding:10px; border:1px solid {color}; border-radius:5px'>{data['Rec']}</div>", unsafe_allow_html=True)
                 
-                # 2. TRADE PLAN (Điểm Mua/Bán)
+                # 2. TRADE PLAN
                 st.markdown("---")
                 st.subheader("📋 KẾ HOẠCH GIAO DỊCH (Risk/Reward 1:2)")
                 
@@ -199,38 +199,67 @@ with tab1:
 
 # ================= TAB 2: BỘ LỌC =================
 with tab2:
-    def get_symbols(sector):
-        # Danh sách rút gọn demo
-        vn30 = ["FPT", "MWG", "HPG", "VCB", "TCB", "VPB", "MBB", "ACB", "STB", "MSN", "GAS", "VNM", "VIC", "VHM", "VRE", "SSI", "POW", "PLX", "SAB", "GVR"]
-        mid = ["DGC", "VHC", "ANV", "FRT", "DGW", "PC1", "GEG", "HDG", "PVS", "PVD", "KBC", "IDC", "SZC", "DIG", "CEO", "DXG", "NKG", "HSG", "HHV", "LCG"]
-        return [f"{s}.VN" for s in (vn30 + mid)]
+    def get_stock_universe_pro(sector_choice):
+        # DANH SÁCH VN100 (Cập nhật mới nhất)
+        vn100 = [
+            "ACB", "BCM", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG",
+            "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB",
+            "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE",
+            "LPB", "MSB", "OCB", "EIB", "TPB", "VIX", "VND", "VCI", "HCM", "SHS",
+            "MBS", "ORS", "FTS", "BSI", "CTS", "AGR", "VDS", "DGC", "DPM", "DCM",
+            "CSV", "VHC", "ANV", "FMC", "MPC", "IDI", "KDH", "KBC", "DIG", "DXG",
+            "NLG", "PDR", "CEO", "IDC", "SZC", "HDG", "TCH", "IJC", "HDC", "KHG",
+            "HSG", "NKG", "VGS", "PC1", "REE", "GEG", "NT2", "GMD", "HAH", "VOS",
+            "PVT", "PVS", "PVD", "BSR", "OIL", "DGW", "FRT", "PET", "TNG", "GIL",
+            "DBC", "HAG", "PAN", "LTG", "GEG", "SJS", "VPI", "NVL"
+        ]
+        
+        selected = []
+        if "VN100" in str(sector_choice):
+            selected += vn100
+        if "QUÉT TOÀN BỘ" in str(sector_choice):
+            # Thêm các mã ngoài VN100 nếu cần
+            extra = ["CMX", "VPG", "HT1", "BCC"]
+            selected = list(set(vn100 + extra))
+        else:
+            # Logic lọc theo ngành (như cũ) nếu không chọn VN100
+            if "Ngân hàng" in str(sector_choice): selected += ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "STB", "VPB", "HDB", "LPB"]
+            if "Thép" in str(sector_choice): selected += ["HPG", "HSG", "NKG", "VGS"]
+            
+        return [f"{s}.VN" for s in list(set(selected))]
 
     def scan_market(symbols, min_score):
         res = []
         bar = st.progress(0)
+        st_status = st.empty()
+        
         for i, s in enumerate(symbols):
+            st_status.caption(f"Đang quét: {s} ({i+1}/{len(symbols)})")
             # Dùng lại hàm phân tích ở trên
             d, e = analyze_single_stock(s)
             if d and d['Score'] >= min_score:
                 res.append(d)
             bar.progress((i+1)/len(symbols))
+            
+        st_status.empty()
         return res
 
     c1, c2 = st.columns([3,1])
     with c1:
-        st.info("Quét nhanh 40 mã hot nhất (VN30 + Midcap)")
+        # Cập nhật Multiselect với VN100
+        sectors = st.multiselect("Chọn nhóm:", ["VN100", "QUÉT TOÀN BỘ", "Ngân hàng", "Thép"], default=["VN100"])
     with c2:
         min_s = st.slider("Điểm tối thiểu:", 0, 100, 60)
-        btn_scan = st.button("🚀 QUÉT TÍN HIỆU")
+        btn_scan = st.button("🚀 QUÉT VN100")
 
     if btn_scan:
-        syms = get_symbols("ALL")
+        syms = get_stock_universe_pro(sectors)
         results = scan_market(syms, min_s)
         
         if results:
             df_res = pd.DataFrame(results).sort_values(by="Score", ascending=False)
             
-            # Hiển thị bảng có cột Khuyến nghị, SL, TP
+            st.success(f"Tìm thấy {len(df_res)} mã đạt chuẩn trong VN100.")
             st.dataframe(
                 df_res[['Symbol', 'Price', 'Score', 'Rec', 'SL', 'TP', 'PE']],
                 use_container_width=True,
