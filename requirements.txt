@@ -1,5 +1,12 @@
 streamlit
 pandas
+numpy
 pandas_ta
 yfinance
 plotly
+ccxt
+xgboost
+scikit-learn
+python-dotenv
+schedule
+openpyxl
