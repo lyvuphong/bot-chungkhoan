@@ -8,7 +8,7 @@ import time
 
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(
-    page_title="AI Stock Sniper Pro (Full Market)",
+    page_title="AI Stock Pro (Full Market)",
     layout="wide",
     page_icon="🔥",
     initial_sidebar_state="expanded"
@@ -293,3 +293,4 @@ with tab2:
                 )
             else:
                 st.warning("Không tìm thấy mã nào đạt điểm yêu cầu.")
+
