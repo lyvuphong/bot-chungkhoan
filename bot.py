@@ -8,32 +8,22 @@ import time
 
 # --- 1. CẤU HÌNH GIAO DIỆN PRO ---
 st.set_page_config(
-    page_title="AI Stock Terminal", 
+    page_title="AI Stock Terminal (Trade Plan)", 
     layout="wide", 
-    page_icon="📈",
+    page_icon="🎯",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS TÙY CHỈNH (GIAO DIỆN ĐẸP) ---
+# --- CSS TÙY CHỈNH ---
 st.markdown("""
 <style>
-    /* Chỉnh Font và màu nền */
     .main {background-color: #f8f9fa;}
-    h1 {color: #1f77b4; font-family: 'Helvetica', sans-serif;}
-    
-    /* Style cho các thẻ Metric */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e6e9ef;
         padding: 15px;
         border-radius: 10px;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-    }
-    
-    /* Chỉnh bảng dữ liệu */
-    div[data-testid="stDataFrame"] {
-        border-radius: 10px;
-        overflow: hidden;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -61,7 +51,7 @@ def get_stock_universe(sector_choice):
 
     return [f"{sym}.VN" for sym in list(set(selected_symbols))]
 
-# --- 3. HÀM PHÂN TÍCH (LOGIC ỔN ĐỊNH) ---
+# --- 3. HÀM PHÂN TÍCH & LẬP KẾ HOẠCH ---
 def analyze_stock_final(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -70,7 +60,7 @@ def analyze_stock_final(symbol):
         if df is None or df.empty or len(df) < 50:
             return None, "No Data"
 
-        # Tính chỉ báo (Thủ công để tránh lỗi)
+        # Tính chỉ báo
         try:
             df['SMA_20'] = ta.sma(df['Close'], length=20)
             df['SMA_50'] = ta.sma(df['Close'], length=50)
@@ -109,7 +99,26 @@ def analyze_stock_final(symbol):
             score += 20
             reasons.append("Tiền vào")
 
-        # 4. Tài chính (Info)
+        # --- LẬP KẾ HOẠCH TRADE (PLAN) ---
+        entry_price = close
+        
+        # Stoploss: Giá thấp nhất 20 phiên gần nhất (Hỗ trợ cứng)
+        support_level = df['Low'].tail(20).min()
+        
+        # Nếu hỗ trợ quá xa (>7%), siết lại còn 7% để quản trị rủi ro
+        risk_percent = (entry_price - support_level) / entry_price
+        if risk_percent > 0.07:
+            stop_loss = entry_price * 0.93 # Cắt lỗ 7%
+        else:
+            stop_loss = support_level
+            
+        # Target: Tỷ lệ R:R = 1:2 (Lãi gấp đôi lỗ)
+        risk_amount = entry_price - stop_loss
+        if risk_amount <= 0: risk_amount = entry_price * 0.05 # Fallback
+        
+        take_profit = entry_price + (risk_amount * 2)
+
+        # 4. Tài chính (Info) - Chỉ lấy nếu điểm cao
         pe, eps, roe = 0, 0, 0
         if score >= 40:
             try:
@@ -128,6 +137,9 @@ def analyze_stock_final(symbol):
             "Giá": close,
             "Điểm": score,
             "Xếp hạng": rating,
+            "Giá Mua": entry_price,
+            "Cắt Lỗ": stop_loss,
+            "Chốt Lời": take_profit,
             "P/E": round(pe, 1) if pe else 0, 
             "EPS": eps if eps else 0,
             "ROE": round(roe*100, 1) if roe else 0,
@@ -138,154 +150,113 @@ def analyze_stock_final(symbol):
     except Exception:
         return None, "Error"
 
-# --- 4. VẼ BIỂU ĐỒ PRO (DARK THEME & SUBPLOTS) ---
+# --- 4. VẼ BIỂU ĐỒ PLAN ---
 def plot_chart_pro(data):
     df = data['Dataframe']
     symbol = data['Mã']
     
-    # Tạo biểu đồ 2 ngăn (Giá ở trên, Vol ở dưới)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
 
     # Nến
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], 
-        low=df['Low'], close=df['Close'], name='Giá'
-    ), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Giá'), row=1, col=1)
     
     # MA
     if 'SMA_20' in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
-    if 'SMA_50' in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#00F0FF', width=1), name='MA50'), row=1, col=1)
+    
+    # --- VẼ ĐƯỜNG PLAN ---
+    # Đường Mua
+    fig.add_hline(y=data['Giá Mua'], line_dash="dot", line_color="gray", annotation_text="ENTRY", row=1, col=1)
+    # Đường Cắt Lỗ (Đỏ)
+    fig.add_hline(y=data['Cắt Lỗ'], line_dash="dash", line_color="red", annotation_text=f"STOPLOSS: {int(data['Cắt Lỗ']):,}", row=1, col=1)
+    # Đường Chốt Lời (Xanh)
+    fig.add_hline(y=data['Chốt Lời'], line_dash="dash", line_color="#00CC96", annotation_text=f"TARGET: {int(data['Chốt Lời']):,}", row=1, col=1)
 
-    # Volume (Tô màu xanh/đỏ)
+    # Volume
     colors = ['red' if row['Open'] - row['Close'] >= 0 else 'green' for index, row in df.iterrows()]
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
-    # Layout đẹp
     fig.update_layout(
-        title=f"📈 Phân tích kỹ thuật: {symbol} (Score: {data['Điểm']})",
+        title=f"🎯 Kế hoạch giao dịch: {symbol} (R:R = 1:2)",
         xaxis_rangeslider_visible=False,
         height=600,
-        template="plotly_white", # Nền trắng sạch sẽ
+        template="plotly_white",
         margin=dict(l=50, r=50, t=50, b=50),
-        legend=dict(orientation="h", y=1, x=0, xanchor="left", yanchor="bottom")
+        legend=dict(orientation="h", y=1, x=0)
     )
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 5. GIAO DIỆN CHÍNH ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/10452/10452445.png", width=80)
-    st.title("AI TRADING BOT")
+    st.title("🎯 AI TRADING BOT")
     st.markdown("---")
-    
-    st.subheader("⚙️ Cấu Hình Quét")
     sectors = ["QUÉT TOÀN BỘ", "Ngân hàng", "Chứng khoán", "Bất động sản", "Thép", "Thủy sản"]
     choice = st.multiselect("Chọn ngành:", sectors, default=["QUÉT TOÀN BỘ"])
-    
     min_score = st.slider("Điểm tối thiểu", 0, 100, 40)
-    
     st.markdown("---")
-    btn_scan = st.button("🚀 KÍCH HOẠT HỆ THỐNG", type="primary", use_container_width=True)
-    st.caption("v2.5 Stable - Developed by VuPhong")
+    btn_scan = st.button("🚀 TÌM ĐIỂM MUA BÁN", type="primary", use_container_width=True)
 
-# HEADER TRANG CHÍNH
-st.title("📊 BẢNG ĐIỀU KHIỂN TÍN HIỆU THỊ TRƯỜNG")
-st.markdown("Hệ thống phân tích tự động dựa trên **Price Action** và **Dòng tiền thông minh**.")
+st.title("📊 BẢNG TÍN HIỆU & KẾ HOẠCH GIAO DỊCH")
+st.caption("Hệ thống tự động tính toán điểm Cắt lỗ & Chốt lời theo tỷ lệ Risk/Reward.")
 
 if btn_scan:
     symbols = get_stock_universe(choice)
-    
-    # Hiển thị Toast thông báo bắt đầu
-    st.toast(f"Đang khởi động AI Scanner cho {len(symbols)} mã...", icon="🤖")
+    st.toast(f"Đang tính toán Trade Plan cho {len(symbols)} mã...", icon="🤖")
     
     progress_bar = st.progress(0)
-    status_text = st.empty()
     results = []
     
-    # Container để hiện log gọn gàng
-    with st.expander("Show Logs (Nhật ký quét)", expanded=False):
-        log_container = st.container()
-    
     for i, sym in enumerate(symbols):
-        status_text.caption(f"🤖 AI đang phân tích: **{sym}** ({i+1}/{len(symbols)})")
-        time.sleep(0.05) # Tránh chặn IP nhẹ
-        
+        time.sleep(0.05)
         data, msg = analyze_stock_final(sym)
-        
-        if data:
-            if data['Điểm'] >= min_score:
-                results.append(data)
-                log_container.write(f"🟢 {sym}: Đạt chuẩn ({data['Điểm']}đ)")
-            else:
-                log_container.write(f"⚪ {sym}: Điểm thấp ({data['Điểm']}đ)")
-        
+        if data and data['Điểm'] >= min_score:
+            results.append(data)
         progress_bar.progress((i+1)/len(symbols))
         
-    status_text.empty()
-    st.toast("Quét hoàn tất!", icon="✅")
-
     if results:
         df_res = pd.DataFrame(results).sort_values(by="Điểm", ascending=False)
         
-        # --- TOP 3 HIGHLIGHTS (DASHBOARD) ---
-        st.markdown("### 🏆 Top Cổ Phiếu Tiềm Năng Nhất")
-        top_cols = st.columns(3)
-        for idx, col in enumerate(top_cols):
+        # --- DASHBOARD TOP 3 ---
+        cols = st.columns(3)
+        for idx, col in enumerate(cols):
             if idx < len(df_res):
                 item = df_res.iloc[idx]
                 col.metric(
-                    label=f"{item['Mã']} ({item['Xếp hạng']})",
+                    label=f"{item['Mã']} (Target: {int(item['Chốt Lời']):,})",
                     value=f"{int(item['Giá']):,} đ",
-                    delta=f"Score: {item['Điểm']}/100"
+                    delta=f"Lãi dự kiến: +{round((item['Chốt Lời']-item['Giá'])/item['Giá']*100, 1)}%"
                 )
 
-        # --- BẢNG DỮ LIỆU CHUYÊN NGHIỆP ---
-        st.markdown("### 📋 Danh Sách Chi Tiết")
-        
-        # Cấu hình bảng hiển thị đẹp mắt
+        # --- BẢNG CHI TIẾT ---
+        st.markdown("### 📋 Danh Sách & Điểm Vào Lệnh")
         st.dataframe(
-            df_res[['Mã', 'Giá', 'Điểm', 'Xếp hạng', 'P/E', 'EPS', 'ROE', 'Lý do']],
+            df_res[['Mã', 'Giá', 'Điểm', 'Xếp hạng', 'Giá Mua', 'Cắt Lỗ', 'Chốt Lời', 'P/E', 'Lý do']],
             use_container_width=True,
             column_config={
-                "Giá": st.column_config.NumberColumn(format="%d đ"),
-                "EPS": st.column_config.NumberColumn(format="%d"),
-                "P/E": st.column_config.NumberColumn(format="%.1f"),
-                "ROE": st.column_config.NumberColumn(format="%.1f %%"),
-                "Điểm": st.column_config.ProgressColumn(
-                    "Sức mạnh AI",
-                    format="%d",
-                    min_value=0,
-                    max_value=100,
-                    help="Điểm số càng cao, tín hiệu mua càng mạnh",
-                ),
-                "Xếp hạng": st.column_config.TextColumn(
-                    "Khuyến nghị",
-                ),
+                "Giá": st.column_config.NumberColumn(format="%d"),
+                "Giá Mua": st.column_config.NumberColumn(format="%d", help="Vùng giá mua khuyến nghị"),
+                "Cắt Lỗ": st.column_config.NumberColumn(format="%d", help="Thủng giá này phải bán ngay"),
+                "Chốt Lời": st.column_config.NumberColumn(format="%d", help="Mục tiêu chốt lời (R:R 1:2)"),
+                "Điểm": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
             },
-            height=400
+            height=500
         )
         
-        # --- BIỂU ĐỒ TƯƠNG TÁC ---
+        # --- BIỂU ĐỒ PLAN ---
         st.divider()
-        st.markdown("### 📈 Phân Tích Kỹ Thuật (Interactive Chart)")
-        
+        st.markdown("### 🎯 Soi Kế Hoạch Giao Dịch")
         c1, c2 = st.columns([1, 3])
         with c1:
-            stock_list = df_res['Mã'].tolist()
-            selected = st.selectbox("🔍 Chọn mã để soi Chart:", stock_list)
-            
-            # Hiện chỉ số cơ bản bên cạnh chart
-            sel_data = df_res[df_res['Mã'] == selected].iloc[0]
-            st.info(f"**{selected}**")
-            st.write(f"**P/E:** {sel_data['P/E']}")
-            st.write(f"**EPS:** {sel_data['EPS']}")
-            st.write(f"**ROE:** {sel_data['ROE']}%")
+            selected = st.selectbox("Chọn mã để xem Plan:", df_res['Mã'].tolist())
+            row = df_res[df_res['Mã'] == selected].iloc[0]
+            st.info(f"**PLAN: {selected}**")
+            st.success(f"🎯 Target: {int(row['Chốt Lời']):,}")
+            st.error(f"🛑 Stoploss: {int(row['Cắt Lỗ']):,}")
+            st.warning(f"⚖️ Tỷ lệ R:R: 1:2")
             
         with c2:
             item = next((x for x in results if x['Mã'] == selected), None)
             if item: plot_chart_pro(item)
             
     else:
-        st.warning("Không tìm thấy mã nào! Hãy thử giảm điểm lọc xuống.")
+        st.warning("Không tìm thấy mã nào! Hãy giảm điểm lọc.")
