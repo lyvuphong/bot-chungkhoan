@@ -16,9 +16,9 @@ SECTORS = {
     "Ngân Hàng (Bank)": ['VCB', 'BID', 'CTG', 'TCB', 'VPB', 'MBB', 'ACB', 'STB', 'HDB', 'VIB', 'SHB', 'LPB', 'MSB', 'OCB', 'TPB'],
     "Chứng Khoán": ['SSI', 'VND', 'VCI', 'HCM', 'SHS', 'MBS', 'FTS', 'BSI', 'CTS', 'AGR', 'VIX', 'ORS'],
     "Bất Động Sản": ['VHM', 'NVL', 'PDR', 'DIG', 'DXG', 'CEO', 'KDH', 'NLG', 'HDG', 'HQC', 'SCR'],
-    "BĐS Khu Công Nghiệp": ['KBC', 'IDC', 'VGC', 'SZC', 'BCM', 'GVR', 'PHR', 'ITA', 'LHG'],
+    "BĐS Khu Công Nghiệp": ['KBC', 'IDC', 'VGC', 'SZC', 'BCM', 'GVR', 'PHR', 'ITA', 'NTC', 'LHG'],
     "Dầu Khí": ['GAS', 'PVD', 'PVS', 'PVT', 'PLX', 'BSR', 'OIL', 'PVB'],
-    "Thủy Sản": ['VHC', 'ANV', 'IDI', 'CMX', 'FMC', 'ACL'],
+    "Thủy Sản": ['VHC', 'MPC', 'ANV', 'IDI', 'CMX', 'FMC', 'ACL'],
     "Dệt May": ['TNG', 'GIL', 'MSH', 'VGT', 'STK', 'ADS'],
     "VN100 (Đại diện)": ['HPG', 'FPT', 'MWG', 'MSN', 'VIC', 'VHM', 'VCB', 'TCB', 'VPB', 'MBB', 'ACB', 'STB', 'SSI', 'VND', 'DGC', 'REE', 'GMD', 'PNJ', 'VHC', 'KBC'], # List rút gọn đại diện
     "HNX30 (Đại diện)": ['SHS', 'CEO', 'IDC', 'MBS', 'PVS', 'TNG', 'VCS', 'HUT', 'L14', 'NVB']
@@ -268,3 +268,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("Developed by Expert Investor (20 Yrs Experience). Data Source: Yahoo Finance.")
+
