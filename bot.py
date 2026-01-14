@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # --- CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Vũ Phong Alpha Trader v2.2", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Vũ Phong Alpha Trader v2.3", page_icon="🦅", layout="wide")
 
 # --- DANH MỤC CỔ PHIẾU (DATA SECTOR) ---
 SECTORS = {
@@ -25,16 +25,37 @@ SECTORS = {
 
 @st.cache_data(ttl=3600)
 def get_vnindex_data():
-    """Tải dữ liệu VN-INDEX"""
+    """Tải dữ liệu VN-INDEX (Đã vá lỗi trả về rỗng)"""
     try:
+        # Tải dữ liệu VNINDEX
         vnindex = yf.download("^VNINDEX", period="1y", interval="1d", progress=False)
+        
+        # Kiểm tra nếu dữ liệu rỗng thì trả về None ngay
+        if vnindex is None or vnindex.empty:
+            return None
+
+        # Xử lý MultiIndex (Do cập nhật mới của yfinance)
         if isinstance(vnindex.columns, pd.MultiIndex):
-            vnindex = vnindex.xs('^VNINDEX', axis=1, level=1) if '^VNINDEX' in vnindex.columns.levels[1] else vnindex
+            # Cố gắng lấy level Ticker nếu có
+            try:
+                vnindex = vnindex.xs('^VNINDEX', axis=1, level=1)
+            except KeyError:
+                pass # Nếu không có level 1 thì giữ nguyên
+            
+            # Nếu vẫn còn MultiIndex, flatten nó
             if isinstance(vnindex.columns, pd.MultiIndex):
                 vnindex.columns = vnindex.columns.get_level_values(0)
+        
+        # Chuẩn hóa tên cột về chữ thường
         vnindex.columns = [c.lower() for c in vnindex.columns]
+        
+        # Kiểm tra lại lần cuối xem có cột 'close' không
+        if 'close' not in vnindex.columns:
+            return None
+            
         return vnindex
-    except Exception:
+    except Exception as e:
+        print(f"Lỗi tải VNINDEX: {e}")
         return None
 
 @st.cache_data(ttl=900)
@@ -43,12 +64,14 @@ def get_stock_batch(ticker_list):
     symbols = [f"{t}.VN" for t in ticker_list]
     try:
         data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', progress=False, threads=True)
+        if data is None or data.empty:
+            return None
         return data
     except Exception:
         return None
 
 def calculate_rs_score(stock_close, market_close):
-    """Tính điểm RS (Relative Strength)"""
+    """Tính điểm RS"""
     try:
         common_index = stock_close.index.intersection(market_close.index)
         s = stock_close.loc[common_index]
@@ -70,33 +93,36 @@ def calculate_rs_score(stock_close, market_close):
         return -999
 
 def calculate_proprietary_score(df, rs_score):
-    """Tính điểm sức mạnh tổng hợp (Thang điểm 100)"""
-    score = 0
-    close = df['close']
-    ema50 = df['ema50']
-    ema200 = df['ema200']
-    rsi = df['rsi']
-    vol = df['volume']
-    
-    current_price = close.iloc[-1]
-    
-    # 1. TREND (Max 40 điểm)
-    if current_price > ema50.iloc[-1]: score += 15
-    if ema50.iloc[-1] > ema200.iloc[-1]: score += 15
-    if current_price > ema200.iloc[-1]: score += 10
-    
-    # 2. RS - SỨC MẠNH (Max 40 điểm)
-    if rs_score > 0: score += 20
-    if rs_score > 10: score += 20
-    
-    # 3. MOMENTUM & VOL (Max 20 điểm)
-    c_rsi = rsi.iloc[-1]
-    if 50 <= c_rsi <= 70: score += 10
-    
-    avg_vol = vol.rolling(20).mean().iloc[-1]
-    if vol.iloc[-1] > avg_vol: score += 10
-    
-    return min(100, score)
+    """Tính điểm sức mạnh tổng hợp"""
+    try:
+        score = 0
+        close = df['close']
+        ema50 = df['ema50']
+        ema200 = df['ema200']
+        rsi = df['rsi']
+        vol = df['volume']
+        
+        current_price = close.iloc[-1]
+        
+        # 1. TREND
+        if current_price > ema50.iloc[-1]: score += 15
+        if ema50.iloc[-1] > ema200.iloc[-1]: score += 15
+        if current_price > ema200.iloc[-1]: score += 10
+        
+        # 2. RS
+        if rs_score > 0: score += 20
+        if rs_score > 10: score += 20
+        
+        # 3. MOMENTUM
+        c_rsi = rsi.iloc[-1]
+        if 50 <= c_rsi <= 70: score += 10
+        
+        avg_vol = vol.rolling(20).mean().iloc[-1]
+        if vol.iloc[-1] > avg_vol: score += 10
+        
+        return min(100, score)
+    except:
+        return 0
 
 def analyze_ticker_pro(ticker, df_input, vnindex_series):
     try:
@@ -164,7 +190,7 @@ def analyze_ticker_pro(ticker, df_input, vnindex_series):
 
 # --- GIAO DIỆN CHÍNH ---
 
-st.title("🦅 Vũ Phong Alpha Trader v2.2")
+st.title("🦅 Vũ Phong Alpha Trader v2.3")
 st.markdown("""
 <style>
 div[data-testid="stMetricValue"] { font-size: 20px; }
@@ -174,7 +200,7 @@ div[data-testid="stMetricValue"] { font-size: 20px; }
 # TẠO TABS CHÍNH
 tab1, tab2 = st.tabs(["📊 Bộ Lọc Cổ Phiếu & Trading Plan", "📝 Báo Cáo Chuyên Gia (Market View)"])
 
-# --- TAB 1: BỘ LỌC CỔ PHIẾU (CODE CŨ) ---
+# --- TAB 1: BỘ LỌC CỔ PHIẾU ---
 with tab1:
     col_filter, col_main = st.columns([1, 4])
     
@@ -190,13 +216,14 @@ with tab1:
             with st.spinner(f"Đang phân tích nhóm {selected_sector}..."):
                 vnindex_df = get_vnindex_data()
                 
-                if vnindex_df is not None:
+                # Check kỹ dữ liệu
+                if vnindex_df is not None and not vnindex_df.empty:
                     vnindex_close = vnindex_df['close']
                     tickers = SECTORS[selected_sector]
                     raw_data = get_stock_batch(tickers)
                     
                     results = []
-                    if raw_data is not None:
+                    if raw_data is not None and not raw_data.empty:
                         bar = st.progress(0)
                         for i, t in enumerate(tickers):
                             bar.progress((i+1)/len(tickers))
@@ -235,7 +262,6 @@ with tab1:
                                 height=500
                             )
                             
-                            # Chart (Rút gọn cho gọn)
                             if not df_res.empty:
                                 chart_ticker = st.selectbox("Xem Chart:", df_res['Mã'].tolist())
                                 try:
@@ -250,10 +276,12 @@ with tab1:
                                 except: pass
                         else:
                             st.warning("Không tìm thấy mã phù hợp.")
+                    else:
+                        st.error("Lỗi: Không tải được dữ liệu cổ phiếu.")
                 else:
-                    st.error("Lỗi VNINDEX.")
+                    st.error("⚠️ Lỗi kết nối VN-INDEX: Yahoo Finance đang quá tải hoặc trả về dữ liệu rỗng. Vui lòng thử lại sau 1 phút.")
 
-# --- TAB 2: NHẬN ĐỊNH THỊ TRƯỜNG (NEW MODULE) ---
+# --- TAB 2: NHẬN ĐỊNH THỊ TRƯỜNG (FIXED BUG) ---
 with tab2:
     st.header("📢 Nhận Định & Hành Động Chuyên Gia")
     st.caption("Dữ liệu được cập nhật sau phiên giao dịch (15h30).")
@@ -262,71 +290,71 @@ with tab2:
         with st.spinner("Đang tính toán sức khỏe thị trường..."):
             vnindex_df = get_vnindex_data()
             
-            if vnindex_df is not None:
+            # --- FIX ERROR LOCATION: Check if dataframe is NOT EMPTY ---
+            if vnindex_df is not None and not vnindex_df.empty and len(vnindex_df) > 50:
                 # 1. Tính toán chỉ số VN-INDEX
                 vni = vnindex_df.copy()
-                vni['EMA20'] = EMAIndicator(close=vni['close'], window=20).ema_indicator()
-                vni['EMA50'] = EMAIndicator(close=vni['close'], window=50).ema_indicator()
-                vni['RSI'] = RSIIndicator(close=vni['close'], window=14).rsi()
                 
-                last = vni.iloc[-1]
-                prev = vni.iloc[-2]
-                
-                # 2. Phân tích Vol (Thanh khoản)
-                avg_vol_20 = vni['volume'].rolling(20).mean().iloc[-1]
-                curr_vol = last['volume']
-                vol_status = "Cao hơn TB 20 phiên" if curr_vol > avg_vol_20 else "Thấp hơn TB 20 phiên"
-                vol_color = "green" if curr_vol > avg_vol_20 and last['close'] > prev['close'] else "red"
-                
-                # 3. Phân tích Xu hướng (Trend Analysis)
-                trend = ""
-                action = ""
-                bg_color = ""
-                
-                # Logic Chuyên Gia
-                if last['close'] > last['EMA50']:
-                    if last['RSI'] > 70:
-                        trend = "UPTREND - QUÁ MUA (Overbought)"
-                        action = "⚠️ Hạn chế mua đuổi. Nên chốt lời một phần các mã đạt mục tiêu. Canh chỉnh để cover."
-                        bg_color = "#ffcc00" # Vàng cảnh báo
+                try:
+                    vni['EMA20'] = EMAIndicator(close=vni['close'], window=20).ema_indicator()
+                    vni['EMA50'] = EMAIndicator(close=vni['close'], window=50).ema_indicator()
+                    vni['RSI'] = RSIIndicator(close=vni['close'], window=14).rsi()
+                    
+                    # Lấy dữ liệu an toàn
+                    last = vni.iloc[-1]
+                    prev = vni.iloc[-2]
+                    
+                    # 2. Phân tích Vol
+                    avg_vol_20 = vni['volume'].rolling(20).mean().iloc[-1]
+                    curr_vol = last['volume']
+                    vol_status = "Cao hơn TB 20 phiên" if curr_vol > avg_vol_20 else "Thấp hơn TB 20 phiên"
+                    
+                    # 3. Phân tích Xu hướng
+                    trend = ""
+                    action = ""
+                    bg_color = ""
+                    
+                    if last['close'] > last['EMA50']:
+                        if last['RSI'] > 70:
+                            trend = "UPTREND - QUÁ MUA (Overbought)"
+                            action = "⚠️ Hạn chế mua đuổi. Nên chốt lời một phần các mã đạt mục tiêu."
+                            bg_color = "#ffcc00"
+                        else:
+                            trend = "UPTREND - TĂNG TRƯỞNG BỀN VỮNG"
+                            action = "💎 Duy trì tỷ trọng Cổ phiếu cao (80-100%)."
+                            bg_color = "#d4edda"
+                    elif last['close'] < last['EMA50'] and last['close'] > last['EMA20']:
+                        trend = "SIDEWAY / HỒI PHỤC KỸ THUẬT"
+                        action = "⚖️ Giữ tỷ trọng 50% Tiền / 50% Cổ."
+                        bg_color = "#fff3cd"
                     else:
-                        trend = "UPTREND - TĂNG TRƯỞNG BỀN VỮNG"
-                        action = "💎 Duy trì tỷ trọng Cổ phiếu cao (80-100%). Tập trung vào các mã Leader có RS cao."
-                        bg_color = "#d4edda" # Xanh nhạt
-                elif last['close'] < last['EMA50'] and last['close'] > last['EMA20']:
-                     trend = "SIDAWAY / HỒI PHỤC KỸ THUẬT"
-                     action = "⚖️ Giữ tỷ trọng 50% Tiền / 50% Cổ. Chỉ trade ngắn hạn (T+)."
-                     bg_color = "#fff3cd"
-                else:
-                    trend = "DOWNTREND - RỦI RO CAO"
-                    action = "🛑 Đưa tỷ trọng Tiền mặt lên tối đa (70-100%). Tuyệt đối không bắt dao rơi."
-                    bg_color = "#f8d7da" # Đỏ nhạt
+                        trend = "DOWNTREND - RỦI RO CAO"
+                        action = "🛑 Đưa tỷ trọng Tiền mặt lên tối đa (70-100%)."
+                        bg_color = "#f8d7da"
 
-                # HIỂN THỊ DASHBOARD
-                col1, col2, col3 = st.columns(3)
-                col1.metric("VN-INDEX", f"{last['close']:,.2f}", f"{(last['close']-prev['close']):.2f} điểm")
-                col2.metric("Thanh khoản", f"{curr_vol/1e6:.1f} tr cổ", vol_status, delta_color="normal")
-                col3.metric("RSI (Sức mạnh)", f"{last['RSI']:.1f}", "Vùng Quá Mua" if last['RSI']>70 else "Trung tính")
-                
-                st.markdown("---")
-                
-                # KHUNG KHUYẾN NGHỊ
-                st.markdown(f"""
-                <div style="background-color: {bg_color}; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-                    <h3 style="color: #333; margin-top: 0;">🔎 TRẠNG THÁI: {trend}</h3>
-                    <p style="font-size: 18px;"><b>🛡 HÀNH ĐỘNG KHUYẾN NGHỊ:</b> {action}</p>
-                    <p><i>Góc nhìn kỹ thuật:</i> VN-INDEX đang đóng cửa ở mức <b>{last['close']:.0f}</b>. Đường hỗ trợ trung hạn EMA50 đang ở mức <b>{last['EMA50']:.0f}</b>.</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # CHART VNINDEX
-                st.subheader("📈 Biểu đồ VN-INDEX")
-                fig_vni = go.Figure()
-                fig_vni.add_trace(go.Candlestick(x=vni.index, open=vni['open'], high=vni['high'], low=vni['low'], close=vni['close'], name='VNINDEX'))
-                fig_vni.add_trace(go.Scatter(x=vni.index, y=vni['EMA20'], line=dict(color='blue', width=1), name='EMA 20 (Ngắn hạn)'))
-                fig_vni.add_trace(go.Scatter(x=vni.index, y=vni['EMA50'], line=dict(color='orange', width=2), name='EMA 50 (Trung hạn)'))
-                fig_vni.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig_vni, use_container_width=True)
-                
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("VN-INDEX", f"{last['close']:,.2f}", f"{(last['close']-prev['close']):.2f} điểm")
+                    col2.metric("Thanh khoản", f"{curr_vol/1e6:.1f} tr cổ", vol_status)
+                    col3.metric("RSI", f"{last['RSI']:.1f}", "Cao" if last['RSI']>70 else "Ổn")
+                    
+                    st.markdown("---")
+                    
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+                        <h3 style="color: #333; margin-top: 0;">🔎 TRẠNG THÁI: {trend}</h3>
+                        <p style="font-size: 18px;"><b>🛡 HÀNH ĐỘNG KHUYẾN NGHỊ:</b> {action}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.subheader("📈 Biểu đồ VN-INDEX")
+                    fig_vni = go.Figure()
+                    fig_vni.add_trace(go.Candlestick(x=vni.index, open=vni['open'], high=vni['high'], low=vni['low'], close=vni['close'], name='VNINDEX'))
+                    fig_vni.add_trace(go.Scatter(x=vni.index, y=vni['EMA20'], line=dict(color='blue', width=1), name='EMA 20'))
+                    fig_vni.add_trace(go.Scatter(x=vni.index, y=vni['EMA50'], line=dict(color='orange', width=2), name='EMA 50'))
+                    fig_vni.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig_vni, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Lỗi tính toán chỉ số: {e}")
             else:
-                st.error("Không tải được dữ liệu thị trường.")
+                st.error("⚠️ Không thể tải dữ liệu VN-INDEX lúc này (Yahoo API trả về rỗng). Vui lòng thử lại sau.")
