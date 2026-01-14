@@ -1,8 +1,4 @@
 streamlit
 pandas
-yfinance
-ta
-plotly
+pandas_ta
 vnstock
-lxml
-requests
